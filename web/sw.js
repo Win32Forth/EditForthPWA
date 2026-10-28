@@ -1,5 +1,5 @@
 /* Network first, so a rebuilt wasm is picked up. The cache covers a later offline open. */
-const CACHE = "editforthpwa-19";
+const CACHE = "editforthpwa-31";
 
 self.addEventListener("install", (event) => {
   event.waitUntil(self.skipWaiting());
@@ -19,7 +19,7 @@ self.addEventListener("fetch", (event) => {
     return;
   }
   event.respondWith(
-    fetch(request)
+    fetch(request, { cache: "no-store" })
       .then((response) => {
         const copy = response.clone();
         caches.open(CACHE).then((cache) => cache.put(request, copy)).catch(() => {});

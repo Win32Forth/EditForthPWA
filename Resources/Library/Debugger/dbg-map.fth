@@ -199,6 +199,19 @@ CREATE DBG-MAP-NAME  64 ALLOT
      DBG-ED-CLEAR-BUF
   THEN ;
 
+\ Same read as (SLURP), without the missing-file message. Cold words are
+\ stamped "boot", and that file is not on disk.
+: (DBG-MAP-READ)  ( c-addr u -- addr u )
+  2DUP R/O BIN OPEN-FILE THROW
+  >R 2DROP
+  R@ FILE-SIZE THROW DROP
+  DUP 0=
+  IF  R> CLOSE-FILE THROW  PAD 0 EXIT  THEN
+  DUP ALLOCATE THROW
+  SWAP
+  2DUP R@ READ-FILE THROW NIP
+  R> CLOSE-FILE THROW ;
+
 \ Slurp VIEW-PATH for file# into fsec once (in-memory; no disk sidecar).
 \ Reuses an existing ALLOCATE buffer. Returns true if TBUF is usable.
 : DBG-MAP-LOAD-FILE-BUF  ( fsec file# -- flag )
@@ -211,7 +224,7 @@ CREATE DBG-MAP-NAME  64 ALLOT
      ELSE
         file# VIEW-PATH TO pathu TO patha
         pathu IF
-           patha pathu ['] (SLURP) CATCH TO ior
+           patha pathu ['] (DBG-MAP-READ) CATCH TO ior
            ior IF
               \ CATCH restores ( c-addr u ); ior already consumed
               2DROP
@@ -259,46 +272,46 @@ CREATE DBG-MAP-NAME  64 ALLOT
   xt ['] (?DO) = IF  TRUE TO f  THEN
   f ;
 
+\ addr is the counted string, the byte after the (S") cell.
+\ Same pad as the engine: (addr + 1 + count + 3) aligned to CELL.
 : DBG-SLIT-SKIP  ( addr -- addr' )
   {: addr -- :}
-  addr @  addr 8 + +  7 + -8 AND ;
+  addr C@ addr + 1+ 3 + -4 AND ;
 
 \ Body span in bytes (EXIT-inclusive). lim is a high-water mark: branch
 \ targets and one-cell lookahead after each token grow it. Ordinary CALL
-\ must use "addr 8 + lim MAX" *after* advancing — "addr lim MAX" alone
-\ leaves lim stuck at body+8, so multi-DUP colons mapped as one cell and
-\ 64Edit always washed the first name match.
-\ Branch targets must grow lim by an extra cell (target+8): a bare
-\ target high-water stops the walk at THEN, so early EXIT inside IF
-\ truncates the map and the continuation (second DUP/0=/…) is missing.
+\ must use "addr CELL+ lim MAX" *after* advancing — "addr lim MAX" alone
+\ leaves lim stuck at body+CELL, so a multi-word colon maps as one cell.
+\ BRANCH stores dest-(offset-cell+CELL). High water is dest+CELL. A bare
+\ dest stops the walk at THEN, so EXIT inside IF drops the continuation.
 : DBG-COLON-BYTES  ( cfa -- bytes )
   {: cfa | addr lim xt done bytes -- :}
   0 TO bytes
   FALSE TO done
   cfa DOCOL? IF
      cfa >BODY TO addr
-     addr 8 + TO lim
+     addr CELL+ TO lim
      BEGIN  done 0=  WHILE
         addr lim U< IF
            addr @ TO xt
            xt ['] EXIT = IF
-              addr 8 + TO addr
+              addr CELL+ TO addr
            ELSE
               xt LIT-ADDR = IF
-                 addr 16 + TO addr
-                 addr 8 + lim MAX TO lim
+                 addr 2 CELLS + TO addr
+                 addr CELL+ lim MAX TO lim
               ELSE
                  xt DBG-BR-OP? IF
-                    addr 8 + @ addr 8 + + 8 + lim MAX TO lim
-                    addr 16 + TO addr
-                    addr 8 + lim MAX TO lim
+                    addr CELL+ @ addr CELL+ + 2 CELLS + lim MAX TO lim
+                    addr 2 CELLS + TO addr
+                    addr CELL+ lim MAX TO lim
                  ELSE
                     xt SLIT-ADDR = IF
-                       addr 8 + DBG-SLIT-SKIP TO addr
-                       addr 8 + lim MAX TO lim
+                       addr CELL+ DBG-SLIT-SKIP TO addr
+                       addr CELL+ lim MAX TO lim
                     ELSE
-                       addr 8 + TO addr
-                       addr 8 + lim MAX TO lim
+                       addr CELL+ TO addr
+                       addr CELL+ lim MAX TO lim
                     THEN
                  THEN
               THEN
@@ -342,7 +355,7 @@ CREATE DBG-MAP-NAME  64 ALLOT
            body cell# 1+ CELLS + @ cmap cell# DBG-SLOT-PAY!
            0 cmap cell# DBG-SLOT-OFF!
            0 cmap cell# DBG-SLOT-LEN!
-           body cell# CELLS + 8 + DBG-SLIT-SKIP body - 8 / TO cell#
+           body cell# CELLS + CELL+ DBG-SLIT-SKIP body - CELL / TO cell#
         ELSE
            xt DBG-BR-OP? IF
               DBG-K-BR cmap cell# DBG-SLOT-KIND!
@@ -735,7 +748,7 @@ CREATE DBG-ALIAS-WIN  64 ALLOT
               THEN
               cmap 0= IF
                  cfa DBG-COLON-BYTES TO bytes
-                 bytes 8 / TO ncells
+                 bytes CELL / TO ncells
                  ncells IF
                     ncells DBG-MAP-MAX-CELLS > IF  DBG-MAP-MAX-CELLS TO ncells  THEN
                     cfa ncells fsec DBG-MAP-NEW-CMAP TO cmap
@@ -792,10 +805,9 @@ CREATE DBG-ALIAS-WIN  64 ALLOT
   THEN
   addr u ;
 
-\ Kernel debug_body_cells = (IP − CFA − 8) / 8. Map slots index from >BODY
-\ (CFA+16), so the spare DOES cell at CFA+8 is not a map slot. Subtract 1.
+\ DBG-BODY# is (IP − (CFA+8)) / CELL, already the map slot from >BODY.
 : DBG-MAP-CELL#  ( -- cell# )
-  DBG-BODY# DUP IF  1-  THEN ;
+  DBG-BODY# ;
 
 \ Highlight via map; ( c-addr u -- ) same contract as SZ-HIGHLIGHT-NAME.
 \ With file-backed TBUF, DBG-ED-HL-SPAN publishes off+len to 64Edit.

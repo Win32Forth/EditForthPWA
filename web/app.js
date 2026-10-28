@@ -1,12 +1,20 @@
-import createEditForth from "./editforth.js";
+import createEditForth from "./editforth.js?v=31";
 
 const log = document.querySelector("#log");
 const installBtn = document.querySelector("#install");
 const editor = document.querySelector("#editor");
+const tabsEl = document.querySelector("#tabs");
+const banner = document.querySelector("#banner");
+const saveBtn = document.querySelector("#save");
+const gutterInner = document.querySelector("#gutter-inner");
+const gutterNums = document.querySelector("#gutter-nums");
+const gutterMark = document.querySelector("#gutter-mark");
 const listing = document.querySelector("#listing");
 const where = document.querySelector("#where");
 const nameForm = document.querySelector("#name-form");
 const nameInput = document.querySelector("#name-input");
+
+const BANNER = "=== EditForthPWA 2.5.6 === Oct 26, 2026 3:26 PM ===\n";
 
 const SEED =
   "\\ Cmd+Enter or Ctrl+Enter loads this file.\n" +
@@ -16,12 +24,25 @@ const SEED =
   "HELLO\n";
 
 const files = new Map();
+const shipped = new Map();
+const SHIPPED_LIB = [
+  "Resources/Library/Debugger/debugger.fth",
+  "Resources/Library/Debugger/debug-bp.fth",
+  "Resources/Library/Debugger/dbg-pause.fth",
+  "Resources/Library/Debugger/dbg-ed.fth",
+  "Resources/Library/Debugger/dbg-map.fth",
+  "Resources/Library/Debugger/debug-runto.fth",
+];
 const history = [];
 let historyAt = 0;
 const chunks = [];
 let programmatic = false;
 let currentPath = "";
-let saveTimer = 0;
+let currentId = 0;
+let nextTabId = 1;
+const tabs = [];
+let saveAsWait = null;
+let askingEdit = false;
 let ready = false;
 let busy = false;
 let opfs = null;
@@ -107,8 +128,26 @@ function render(tail, moveCaret) {
   log.scrollTop = log.scrollHeight;
 }
 
+function resetConsole() {
+  chunks.length = 0;
+  chunks.push({ text: BANNER, cls: "" });
+  render("", false);
+}
+
 function write(text, cls) {
   if (!text) {
+    return;
+  }
+  const cut = text.indexOf("\f");
+  if (cut >= 0) {
+    const tail = currentTail();
+    if (cut > 0) {
+      write(text.slice(0, cut), cls);
+    }
+    chunks.length = 0;
+    chunks.push({ text: BANNER, cls: "" });
+    render(tail, false);
+    write(text.slice(cut + 1), cls);
     return;
   }
   const tail = currentTail();
@@ -162,11 +201,6 @@ function validPath(path) {
   }
   const parts = path.split("/");
   return parts.every((part) => part && part !== "." && part !== ".." && /^[^\s"'\\]+$/.test(part));
-}
-
-function parentDir(path) {
-  const slash = path.lastIndexOf("/");
-  return slash < 0 ? "" : path.slice(0, slash);
 }
 
 function skipFile(name, size) {
@@ -226,7 +260,7 @@ function showFolder(handle) {
 
 async function writeFile(path, text) {
   if (!opfs) {
-    return;
+    return false;
   }
   try {
     const parts = path.split("/");
@@ -239,24 +273,14 @@ async function writeFile(path, text) {
     await writable.write(text);
     await writable.close();
     saveError = "";
+    return true;
   } catch (err) {
     if (saveError !== path) {
       saveError = path;
       write("Could not save " + path + ".\n", "err");
     }
+    return false;
   }
-}
-
-async function removeFile(path) {
-  if (!opfs) {
-    return;
-  }
-  const parts = path.split("/");
-  let dir = opfs;
-  for (let i = 0; i < parts.length - 1; i++) {
-    dir = await dir.getDirectoryHandle(parts[i]);
-  }
-  await dir.removeEntry(parts[parts.length - 1]);
 }
 
 async function walk(dir, prefix, into) {
@@ -311,8 +335,21 @@ async function privateRoot() {
 }
 
 async function useFolder(handle) {
-  await saveCurrent();
-  clearTimeout(saveTimer);
+  rememberEditor();
+  const dirty = tabs.filter((tab) => bufferOf(tab) !== tab.saved);
+  if (dirty.length) {
+    const choice = await askSave("Save changes before opening this folder?");
+    if (choice === "cancel") {
+      return false;
+    }
+    if (choice === "save") {
+      for (const tab of dirty) {
+        if (!(await saveDirty(tab))) {
+          return false;
+        }
+      }
+    }
+  }
   const oldRoot = opfs;
   const oldDisk = diskFolder;
   opfs = handle;
@@ -324,7 +361,7 @@ async function useFolder(handle) {
     opfs = oldRoot;
     diskFolder = oldDisk;
     write("Cannot read that folder.\n", "err");
-    return;
+    return false;
   }
   try {
     await saveHandle(handle);
@@ -332,16 +369,15 @@ async function useFolder(handle) {
     write("This folder will not be remembered after a reload.\n", "err");
   }
   showFolder(handle);
+  tabs.length = 0;
+  currentId = 0;
   currentPath = "";
-  editor.value = "";
   if (files.size === 0) {
-    where.textContent = "";
-    where.className = "";
-    renderTree();
-    editor.focus();
-    return;
+    newUntitled();
+    return true;
   }
   await openFile([...files.keys()].sort()[0]);
+  return true;
 }
 
 function renderTree() {
@@ -389,25 +425,322 @@ function renderTree() {
   add(root, "", 0);
 }
 
-async function saveCurrent() {
-  if (!currentPath) {
-    return;
-  }
-  clearTimeout(saveTimer);
-  files.set(currentPath, editor.value);
-  await writeFile(currentPath, editor.value);
+function currentTab() {
+  return tabs.find((tab) => tab.id === currentId) || null;
 }
 
-async function openFile(path) {
-  if (currentPath && currentPath !== path) {
-    await saveCurrent();
+function bufferOf(tab) {
+  if (!tab) {
+    return "";
   }
-  currentPath = path;
-  editor.value = files.get(path) ?? "";
-  where.textContent = path;
-  where.className = "";
+  if (tab.id === currentId) {
+    return editor.value;
+  }
+  if (tab.path) {
+    return files.get(tab.path) ?? "";
+  }
+  return tab.text ?? "";
+}
+
+function rememberEditor() {
+  const tab = currentTab();
+  if (!tab) {
+    return;
+  }
+  if (tab.path) {
+    files.set(tab.path, editor.value);
+  } else {
+    tab.text = editor.value;
+  }
+}
+
+function askSave(message) {
+  const box = document.querySelector("#save-ask");
+  document.querySelector("#save-ask-text").textContent = message;
+  box.hidden = false;
+  return new Promise((resolve) => {
+    const buttons = [...box.querySelectorAll("button")];
+    const finish = (choice) => {
+      buttons.forEach((button) => button.removeEventListener("click", onClick));
+      box.hidden = true;
+      resolve(choice);
+    };
+    const onClick = (event) => finish(event.currentTarget.dataset.choice);
+    buttons.forEach((button) => button.addEventListener("click", onClick));
+  });
+}
+
+async function saveTab(tab) {
+  if (!tab || !tab.path) {
+    return false;
+  }
+  rememberEditor();
+  const text = files.get(tab.path) ?? "";
+  if (!(await writeFile(tab.path, text))) {
+    return false;
+  }
+  tab.saved = text;
+  updateSaveButton();
+  renderTabs();
+  return true;
+}
+
+function saveAs(tab) {
+  nameForm.hidden = false;
+  nameInput.value = tab.title || "Untitled.fth";
+  nameInput.focus();
+  nameInput.select();
+  return new Promise((resolve) => {
+    saveAsWait = { tab, resolve };
+  });
+}
+
+async function finishSaveAs(path) {
+  const pending = saveAsWait;
+  if (!pending) {
+    return;
+  }
+  const tab = pending.tab;
+  if (!validPath(path)) {
+    where.textContent = "Use a name like work.fth or lib/work.fth";
+    where.className = "err";
+    nameForm.hidden = false;
+    return;
+  }
+  if (files.has(path) || tabs.some((item) => item !== tab && item.path === path)) {
+    where.textContent = path + " already exists";
+    where.className = "err";
+    nameForm.hidden = false;
+    return;
+  }
+  const text = bufferOf(tab);
+  if (!(await writeFile(path, text))) {
+    saveAsWait = null;
+    nameForm.hidden = true;
+    pending.resolve(false);
+    return;
+  }
+  files.set(path, text);
+  tab.path = path;
+  tab.title = path.split("/").pop();
+  tab.saved = text;
+  tab.text = "";
+  saveAsWait = null;
+  nameForm.hidden = true;
+  if (currentId === tab.id) {
+    currentPath = path;
+    where.textContent = path;
+    where.className = "";
+  }
+  updateSaveButton();
+  renderTabs();
   renderTree();
+  pending.resolve(true);
+}
+
+function cancelSaveAs() {
+  if (!saveAsWait) {
+    nameForm.hidden = true;
+    return;
+  }
+  const pending = saveAsWait;
+  saveAsWait = null;
+  nameForm.hidden = true;
+  pending.resolve(false);
+}
+
+async function saveDirty(tab) {
+  if (!tab) {
+    return false;
+  }
+  if (!tab.path) {
+    return saveAs(tab);
+  }
+  return saveTab(tab);
+}
+
+function updateSaveButton() {
+  const tab = currentTab();
+  saveBtn.disabled = !tab || bufferOf(tab) === tab.saved;
+}
+
+function renderTabs() {
+  tabsEl.replaceChildren();
+  for (const tab of tabs) {
+    const leaf = tab.path ? tab.path.split("/").pop() : tab.title;
+    const dup = tab.path && tabs.filter((item) => item.path && item.path.split("/").pop() === leaf).length > 1;
+    const chip = document.createElement("div");
+    chip.className = "tab" + (tab.id === currentId ? " active" : "");
+    const select = document.createElement("button");
+    select.type = "button";
+    select.className = "tab-name";
+    const dirty = bufferOf(tab) !== tab.saved;
+    select.textContent = (dirty ? "• " : "") + (dup ? tab.path : leaf);
+    select.title = tab.path || tab.title;
+    select.addEventListener("click", () => {
+      if (tab.path) {
+        openFile(tab.path);
+      } else {
+        rememberEditor();
+        showTab(tab);
+      }
+    });
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "tab-close";
+    close.textContent = "×";
+    close.title = "Close";
+    close.addEventListener("click", (event) => {
+      event.stopPropagation();
+      closeTab(tab.id);
+    });
+    chip.append(select, close);
+    tabsEl.appendChild(chip);
+  }
+}
+
+function leaveView() {
+  const tab = currentTab();
+  if (!tab) {
+    return;
+  }
+  tab.view = false;
+  editor.readOnly = false;
+  banner.hidden = true;
   editor.focus();
+}
+
+function showTab(tab, opts) {
+  if (opts && opts.view === true) {
+    tab.view = true;
+  }
+  currentId = tab.id;
+  currentPath = tab.path;
+  editor.value = tab.path ? (files.get(tab.path) ?? "") : (tab.text ?? "");
+  editor.readOnly = tab.view;
+  banner.hidden = !tab.view;
+  where.textContent = tab.path || tab.title;
+  where.className = "";
+  paintLines();
+  renderTabs();
+  renderTree();
+  updateSaveButton();
+  editor.focus();
+}
+
+function showNone() {
+  currentId = 0;
+  currentPath = "";
+  editor.value = "";
+  editor.readOnly = true;
+  banner.hidden = true;
+  where.textContent = "";
+  where.className = "";
+  paintLines();
+  renderTabs();
+  renderTree();
+  updateSaveButton();
+}
+
+function newUntitled() {
+  rememberEditor();
+  let title = "Untitled.fth";
+  let n = 1;
+  const taken = (name) => files.has(name) || tabs.some((tab) => tab.path === name || (!tab.path && tab.title === name));
+  while (taken(title)) {
+    n += 1;
+    title = "Untitled" + n + ".fth";
+  }
+  const tab = { id: nextTabId++, path: "", title, saved: "", view: false, text: "" };
+  tabs.push(tab);
+  showTab(tab);
+}
+
+async function openFile(path, opts) {
+  rememberEditor();
+  let tab = tabs.find((item) => item.path === path);
+  if (!tab) {
+    tab = { id: nextTabId++, path, title: path.split("/").pop(), saved: files.get(path) ?? "", view: false, text: "" };
+    tabs.push(tab);
+  }
+  showTab(tab, opts);
+}
+
+async function closeTab(id) {
+  rememberEditor();
+  const tab = tabs.find((item) => item.id === id);
+  if (!tab) {
+    return;
+  }
+  const label = tab.path || tab.title;
+  if (bufferOf(tab) !== tab.saved) {
+    const choice = await askSave("Save changes to " + label + " before closing?");
+    if (choice === "cancel") {
+      return;
+    }
+    if (choice === "save") {
+      if (!(await saveDirty(tab))) {
+        return;
+      }
+    } else if (tab.path) {
+      files.set(tab.path, tab.saved);
+    }
+  }
+  const index = tabs.indexOf(tab);
+  tabs.splice(index, 1);
+  if (currentId !== id) {
+    renderTabs();
+    renderTree();
+    updateSaveButton();
+    return;
+  }
+  const next = tabs[index] || tabs[index - 1];
+  currentId = 0;
+  currentPath = "";
+  if (next) {
+    showTab(next);
+    return;
+  }
+  showNone();
+}
+
+function lineCount() {
+  const text = editor.value;
+  if (text.length === 0) {
+    return 1;
+  }
+  let n = 1;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) {
+      n++;
+    }
+  }
+  return n;
+}
+
+function paintLines() {
+  const n = lineCount();
+  const parts = new Array(n);
+  for (let i = 0; i < n; i++) {
+    parts[i] = String(i + 1);
+  }
+  gutterNums.textContent = parts.join("\n");
+  gutterNums.style.minWidth = String(n).length + "ch";
+  gutterMark.hidden = true;
+  syncGutter();
+}
+
+function syncGutter() {
+  gutterInner.style.transform = "translateY(" + (-editor.scrollTop) + "px)";
+}
+
+function markLine(line) {
+  const n = lineCount();
+  const shown = Math.max(1, Math.min(n, line));
+  const pad = parseFloat(getComputedStyle(gutterInner).paddingTop) || 0;
+  const lh = parseFloat(getComputedStyle(gutterNums).lineHeight) || 21;
+  gutterMark.hidden = false;
+  gutterMark.style.top = (pad + (shown - 1) * lh) + "px";
 }
 
 function selectLine(line) {
@@ -417,36 +750,122 @@ function selectLine(line) {
   for (let i = 0; i < index; i++) {
     start += lines[i].length + 1;
   }
+  const cs = getComputedStyle(editor);
+  const lh = parseFloat(cs.lineHeight) || 21;
+  const pad = parseFloat(cs.paddingTop) || 0;
+  const y = pad + index * lh;
+  if (y < editor.scrollTop || y + lh > editor.scrollTop + editor.clientHeight) {
+    editor.scrollTop = Math.max(0, y - editor.clientHeight / 3);
+  }
+  syncGutter();
+  markLine(index + 1);
   editor.focus();
   editor.setSelectionRange(start, start + lines[index].length);
 }
 
 async function revealError(name, line) {
-  if (name && files.has(name) && name !== currentPath) {
-    await openFile(name);
+  if (name && files.has(name)) {
+    await openFile(name, { view: true });
+  } else if (name) {
+    const tab = tabs.find((item) => item.path === name || (!item.path && item.title === name));
+    if (tab) {
+      rememberEditor();
+      showTab(tab, { view: true });
+    }
   }
-  if (line && (!name || name === currentPath)) {
+  const shown = currentTab();
+  const shownName = shown ? (shown.path || shown.title) : "";
+  if (line && (!name || name === shownName)) {
     selectLine(line);
   }
 }
 
+function mountOne(path, text, seen) {
+  if (seen.has(path) || !validPath(path) || text.length > 256 * 1024 - 1) {
+    return;
+  }
+  api.mount(path, text);
+  seen.add(path);
+}
+
 function syncMount() {
   api.mountClear();
+  const seen = new Set();
   for (const [path, text] of files) {
-    if (!validPath(path) || text.length > 256 * 1024 - 1) {
-      continue;
-    }
-    api.mount(path, text);
+    mountOne(path, text, seen);
+  }
+  for (const [path, text] of shipped) {
+    mountOne(path, text, seen);
   }
 }
 
-async function report(code) {
-  const text = api.output();
-  if (text) {
-    write(text, code ? "err" : "");
-    if (!text.endsWith("\n")) {
+async function loadShipped() {
+  let missing = 0;
+  for (const path of SHIPPED_LIB) {
+    try {
+      const res = await fetch(path);
+      if (!res.ok) {
+        missing += 1;
+        continue;
+      }
+      shipped.set(path, await res.text());
+    } catch (err) {
+      missing += 1;
+    }
+  }
+  if (missing && !files.has(SHIPPED_LIB[0])) {
+    write("Debugger library files were not found next to this page.\n", "err");
+  }
+}
+
+function debugCode(event) {
+  if (event.metaKey || event.ctrlKey || event.altKey) {
+    return null;
+  }
+  if (event.key === "F6") {
+    return (2 << 24) | 16;
+  }
+  if (event.key === "F7") {
+    return (2 << 24) | 17;
+  }
+  if (event.key === "F8") {
+    return (2 << 24) | 18;
+  }
+  if (event.key === "Escape") {
+    return 27;
+  }
+  if (event.key === "Enter") {
+    return 13;
+  }
+  if (event.key === " ") {
+    return 32;
+  }
+  if (event.key.length === 1) {
+    return event.key.charCodeAt(0);
+  }
+  return null;
+}
+
+async function runEval(source) {
+  shownOut = 0;
+  const code = await api.eval(source);
+  const text = api.output() || "";
+  const rest = text.slice(shownOut);
+  const visible = text.replaceAll("\f", "");
+  if (shownOut === 0) {
+    if (text) {
+      write(labelRoot(text), code ? "err" : "");
+      if (visible && !visible.endsWith("\n")) {
+        write("\n");
+      }
+    }
+  } else if (rest) {
+    write(rest, code ? "err" : "");
+    if (visible && !visible.endsWith("\n")) {
       write("\n");
     }
+  } else if (visible && !visible.endsWith("\n")) {
+    write("\n");
   }
   if (code) {
     const name = api.errorName();
@@ -454,7 +873,7 @@ async function report(code) {
     if (line) {
       write((name ? name + ":" + line : "line " + line) + "\n", "err");
       await revealError(name, line);
-      where.textContent = name ? name + ":" + line : currentPath;
+      where.textContent = name ? name + ":" + line : (currentTab() ? (currentTab().path || currentTab().title) : "");
       where.className = "err";
     }
     write("throw " + code + "\n", "err");
@@ -465,30 +884,35 @@ async function report(code) {
 }
 
 async function loadFile(fresh) {
-  if (!ready || busy || !currentPath) {
+  const tab = currentTab();
+  if (!ready || busy || (!tab && !fresh)) {
     return;
   }
   busy = true;
   try {
-    await saveCurrent();
-    write((fresh ? "restart " : "load ") + currentPath + "\n");
+    rememberEditor();
     if (fresh) {
+      resetConsole();
       const bootCode = api.boot();
       const bootText = api.output();
       if (bootText) {
         write(bootText, bootCode ? "err" : "");
       }
+      syncMount();
+      api.setSource("");
       if (bootCode) {
         write("boot throw " + bootCode + "\n", "err");
-        setPrompt();
-        return;
       }
+      setPrompt();
+      return;
     }
+    const name = tab.path || tab.title;
+    write("include " + name + "\n");
     syncMount();
-    api.setSource(currentPath);
-    await report(api.eval(files.get(currentPath) ?? ""));
+    api.setSource(name);
+    await runEval(bufferOf(tab));
   } catch (err) {
-    write("load failed: " + (err && err.message ? err.message : String(err)) + "\n", "err");
+    write("include failed: " + (err && err.message ? err.message : String(err)) + "\n", "err");
     setPrompt();
   } finally {
     busy = false;
@@ -514,10 +938,14 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("sw.js").catch(() => {});
 }
 
-const Module = await createEditForth();
+const Module = await createEditForth({
+  locateFile(path, prefix) {
+    return (prefix || "") + path + "?v=31";
+  },
+});
 const api = {
   boot: Module.cwrap("ef_web_boot", "number", []),
-  eval: Module.cwrap("ef_web_eval", "number", ["string"]),
+  eval: Module.cwrap("ef_web_eval", "number", ["string"], { async: true }),
   mountClear: Module.cwrap("ef_web_mount_clear", "number", []),
   mount: Module.cwrap("ef_web_mount", "number", ["string", "string"]),
   setSource: Module.cwrap("ef_web_set_source", "number", ["string"]),
@@ -526,8 +954,22 @@ const api = {
   bye: Module.cwrap("ef_web_bye", "number", []),
   errorLine: Module.cwrap("ef_web_error_line", "number", []),
   errorName: Module.cwrap("ef_web_error_name", "string", []),
+  postKey: Module.cwrap("ef_web_post_key", null, ["number"]),
+  keyWaiting: Module.cwrap("ef_web_key_waiting", "number", []),
 };
 
+let shownOut = 0;
+function pumpDebug() {
+  const text = api.output() || "";
+  if (text.length <= shownOut) {
+    return;
+  }
+  write(text.slice(shownOut));
+  shownOut = text.length;
+}
+Module._forthPump = pumpDebug;
+
+write(BANNER);
 try {
   const saved = await loadHandle();
   if (saved && (await saved.queryPermission({ mode: "readwrite" })) === "granted") {
@@ -553,16 +995,11 @@ if (api.output()) {
 if (bootCode !== 0) {
   write("boot throw " + bootCode + "\n", "err");
 } else {
+  await loadShipped();
   ready = true;
 }
 setPrompt();
-if (files.size) {
-  const first = !diskFolder && files.has("work.fth") ? "work.fth" : [...files.keys()].sort()[0];
-  await openFile(first);
-} else {
-  renderTree();
-  editor.focus();
-}
+showNone();
 
 document.querySelector("#open-folder").addEventListener("click", async () => {
   if (typeof window.showDirectoryPicker !== "function") {
@@ -587,66 +1024,80 @@ document.querySelector("#open-folder").addEventListener("click", async () => {
 });
 document.querySelector("#load").addEventListener("click", () => loadFile(false));
 document.querySelector("#restart").addEventListener("click", () => loadFile(true));
+document.querySelector("#close-file").addEventListener("click", () => {
+  if (currentTab()) {
+    closeTab(currentId);
+  }
+});
+document.querySelector("#save").addEventListener("click", () => {
+  const tab = currentTab();
+  if (tab && bufferOf(tab) !== tab.saved) {
+    saveDirty(tab);
+  }
+});
+document.querySelector("#leave-view").addEventListener("click", leaveView);
+document.addEventListener("keydown", (event) => {
+  if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "s") {
+    event.preventDefault();
+    const tab = currentTab();
+    if (tab && bufferOf(tab) !== tab.saved) {
+      saveDirty(tab);
+    }
+  }
+});
 document.querySelector("#new-file").addEventListener("click", () => {
-  nameForm.hidden = false;
-  nameInput.value = parentDir(currentPath);
-  if (nameInput.value) {
-    nameInput.value += "/";
-  }
-  nameInput.focus();
+  newUntitled();
 });
-document.querySelector("#delete").addEventListener("click", async () => {
-  if (!currentPath) {
-    return;
-  }
-  if (!window.confirm("Delete " + currentPath + "?")) {
-    return;
-  }
-  const path = currentPath;
-  try {
-    await removeFile(path);
-  } catch (err) {
-    write("Could not delete " + path + ".\n", "err");
-    return;
-  }
-  files.delete(path);
-  currentPath = "";
-  editor.value = "";
-  const rest = [...files.keys()].sort();
-  if (rest.length) {
-    await openFile(rest[0]);
-  } else {
-    where.textContent = "";
-    renderTree();
-  }
-});
-nameForm.addEventListener("submit", async (event) => {
+nameForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const path = nameInput.value.trim().replace(/^\/+/, "");
-  nameForm.hidden = true;
-  if (!validPath(path)) {
-    where.textContent = "Use a name like work.fth or lib/work.fth";
-    where.className = "err";
-    return;
-  }
-  if (!files.has(path)) {
-    const text = "\\ " + path + "\n";
-    files.set(path, text);
-    await writeFile(path, text);
-  }
-  await openFile(path);
+  finishSaveAs(path);
 });
+nameInput.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    cancelSaveAs();
+  }
+});
+editor.addEventListener("scroll", syncGutter);
 editor.addEventListener("input", () => {
-  if (!currentPath) {
+  paintLines();
+  const tab = currentTab();
+  if (!tab) {
     return;
   }
-  files.set(currentPath, editor.value);
-  where.textContent = currentPath;
+  if (tab.path) {
+    files.set(tab.path, editor.value);
+  } else {
+    tab.text = editor.value;
+  }
+  where.textContent = tab.path || tab.title;
   where.className = "";
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => writeFile(currentPath, editor.value), 300);
+  updateSaveButton();
+  renderTabs();
 });
+function isTypingKey(event) {
+  if (event.metaKey || event.ctrlKey || event.altKey) {
+    return false;
+  }
+  return event.key === "Backspace" || event.key === "Delete" || event.key === "Enter" || event.key === "Tab" || event.key.length === 1;
+}
 editor.addEventListener("keydown", (event) => {
+  if (editor.readOnly && isTypingKey(event)) {
+    event.preventDefault();
+    if (!currentTab()) {
+      return;
+    }
+    if (!askingEdit) {
+      askingEdit = true;
+      const yes = window.confirm("This file is in view mode. Switch to Edit?");
+      askingEdit = false;
+      if (yes) {
+        leaveView();
+      }
+    }
+    return;
+  }
   if (!(event.metaKey || event.ctrlKey) || event.key !== "Enter") {
     return;
   }
@@ -666,11 +1117,55 @@ function recallHistory(up) {
   render(historyAt === history.length ? "" : history[historyAt], true);
 }
 
-async function submitLine() {
+/* Browser folder ids. CHDIR of one of these, when it is not already in the
+   mount, opens the folder picker there. The call has to start in the key handler. */
+const FOLDER_IDS = ["desktop", "documents", "downloads", "music", "pictures", "videos"];
+
+function chdirFolderId(line) {
+  const match = /^\s*chdir\s+(?:"([^"]*)"|(\S+))\s*$/i.exec(line);
+  if (!match) {
+    return "";
+  }
+  const raw = match[1] != null ? match[1] : match[2];
+  const name = raw.toLowerCase();
+  return FOLDER_IDS.includes(name) ? name : "";
+}
+
+function mountedTopDir(name) {
+  const want = name.toLowerCase();
+  const paths = [...files.keys(), ...shipped.keys()];
+  for (const path of paths) {
+    const seg = path.split("/")[0];
+    if (path.includes("/") && seg.toLowerCase() === want) {
+      return seg;
+    }
+  }
+  return "";
+}
+
+function labelRoot(text) {
+  const name = diskFolder && opfs && opfs.name ? opfs.name : "";
+  if (!name || !text) {
+    return text;
+  }
+  return text.replaceAll("Directory of .", "Directory of " + name).replaceAll("Current directory: .", "Current directory: " + name);
+}
+
+async function cwdToRoot() {
+  for (let i = 0; i < 40; i++) {
+    await api.eval("CHDIR ..");
+    const text = api.output() || "";
+    if (text.includes("CHDIR error")) {
+      return;
+    }
+  }
+}
+
+async function submitLine(folderPick, lineOverride) {
   if (!ready || busy) {
     return;
   }
-  const line = currentTail().trim();
+  const line = lineOverride != null ? lineOverride : currentTail().trim();
   const shown = currentTail().endsWith("\n") ? currentTail() : currentTail() + "\n";
   chunks.push({ text: shown, cls: "" });
   render("", false);
@@ -683,12 +1178,30 @@ async function submitLine() {
   historyAt = history.length;
   busy = true;
   try {
-    await saveCurrent();
+    if (folderPick) {
+      let handle;
+      try {
+        handle = await folderPick;
+      } catch (err) {
+        if (!(err && err.name === "AbortError")) {
+          write("Could not open that folder.\n", "err");
+        }
+        return;
+      }
+      const opened = await useFolder(handle);
+      if (!opened) {
+        return;
+      }
+      await cwdToRoot();
+      write("Current directory: " + (handle.name || "folder") + "\n");
+      return;
+    }
+    rememberEditor();
     syncMount();
     api.setSource("");
-    await report(api.eval(line));
+    await runEval(line);
   } catch (err) {
-    write("load failed: " + (err && err.message ? err.message : String(err)) + "\n", "err");
+    write("include failed: " + (err && err.message ? err.message : String(err)) + "\n", "err");
     setPrompt();
   } finally {
     busy = false;
@@ -700,6 +1213,17 @@ log.addEventListener("keydown", (event) => {
   if (event.isComposing) {
     return;
   }
+  if (api.keyWaiting()) {
+    event.preventDefault();
+    if (event.repeat) {
+      return;
+    }
+    const code = debugCode(event);
+    if (code != null) {
+      api.postKey(code);
+    }
+    return;
+  }
   if (event.key === "ArrowUp" || event.key === "ArrowDown") {
     event.preventDefault();
     recallHistory(event.key === "ArrowUp");
@@ -707,10 +1231,35 @@ log.addEventListener("keydown", (event) => {
   }
   if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.altKey) {
     event.preventDefault();
+    const typed = currentTail().trim();
+    const folderId = chdirFolderId(typed);
+    const mounted = folderId ? mountedTopDir(folderId) : "";
+    if (folderId && !mounted && typeof window.showDirectoryPicker === "function") {
+      let pick;
+      try {
+        pick = window.showDirectoryPicker({
+          id: "editforth-" + folderId,
+          mode: "readwrite",
+          startIn: folderId,
+        });
+      } catch (err) {
+        pick = Promise.reject(err);
+      }
+      submitLine(pick);
+      return;
+    }
+    if (mounted) {
+      submitLine(null, "chdir " + mounted);
+      return;
+    }
     submitLine();
   }
 });
 log.addEventListener("beforeinput", (event) => {
+  if (api.keyWaiting()) {
+    event.preventDefault();
+    return;
+  }
   if (programmatic) {
     return;
   }

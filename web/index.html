@@ -73,6 +73,7 @@
     }
     .tools {
       display: flex;
+      flex-wrap: wrap;
       gap: 6px;
       padding: 8px;
       border-bottom: 1px solid #d0d0d0;
@@ -111,7 +112,86 @@
       min-width: 0;
       min-height: 120px;
       display: flex;
+      flex-direction: column;
     }
+    #tabs {
+      flex: none;
+      display: flex;
+      overflow-x: auto;
+      background: #f3f3f3;
+      border-bottom: 1px solid #d0d0d0;
+    }
+    #tabs:empty { display: none; }
+    .tab {
+      display: flex;
+      align-items: stretch;
+      flex: none;
+      border-right: 1px solid #d0d0d0;
+      background: #f3f3f3;
+    }
+    .tab.active { background: #ffffff; }
+    .tab-name, .tab-close {
+      border: 0;
+      background: transparent;
+      cursor: pointer;
+      padding: 6px 8px;
+    }
+    .tab-close { padding-left: 0; color: #444444; }
+    #banner {
+      flex: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 10px;
+      background: #fff3b0;
+      color: #111111;
+      border-bottom: 1px solid #e6d48a;
+      font-size: 13px;
+    }
+    #banner[hidden] { display: none; }
+    #banner .spacer { flex: 1; }
+    #banner button {
+      background: #ffffff;
+      border: 1px solid #b0b0b0;
+      border-radius: 6px;
+      padding: 4px 10px;
+      cursor: pointer;
+    }
+    #editor-row {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: row;
+    }
+    #gutter {
+      flex: none;
+      overflow: hidden;
+      align-self: stretch;
+      background: #f7f7f7;
+      border-right: 1px solid #e4e4e4;
+      color: #6a6a6a;
+    }
+    #gutter-inner {
+      position: relative;
+      padding: 12px 8px 12px 10px;
+    }
+    #gutter-nums {
+      margin: 0;
+      position: relative;
+      z-index: 1;
+      text-align: right;
+      line-height: 21px;
+      font: inherit;
+    }
+    #gutter-mark {
+      position: absolute;
+      left: 0;
+      right: 0;
+      height: 21px;
+      background: #f4d4d4;
+      z-index: 0;
+    }
+    #gutter-mark[hidden] { display: none; }
     #split {
       flex: none;
       height: 18px;
@@ -143,8 +223,34 @@
       background: #ffffff;
       color: #111111;
       padding: 12px 14px;
+      line-height: 21px;
       white-space: pre;
     }
+    #editor[readonly] {
+      background: #ffffff;
+      color: #111111;
+    }
+    button:disabled { opacity: 0.45; cursor: default; }
+    #save-ask {
+      position: fixed;
+      inset: 0;
+      z-index: 5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(17, 17, 17, 0.25);
+    }
+    #save-ask[hidden] { display: none; }
+    #save-ask .card {
+      max-width: 440px;
+      background: #ffffff;
+      color: #111111;
+      border: 1px solid #b0b0b0;
+      border-radius: 8px;
+      padding: 16px;
+    }
+    #save-ask p { margin: 0 0 14px; }
+    #save-ask .choices { display: flex; gap: 8px; justify-content: flex-end; }
     #console {
       flex: none;
       height: 190px;
@@ -183,24 +289,35 @@
     <span id="where"></span>
     <span class="spacer"></span>
     <button id="open-folder" type="button">Open Folder</button>
-    <button id="load" class="primary" type="button" title="Cmd+Enter or Ctrl+Enter">Load</button>
-    <button id="restart" type="button" title="Fresh image, then load">Restart</button>
+    <button id="save" type="button" title="Save this file. A new file asks for a name. (Cmd+S or Ctrl+S)" disabled>Save</button>
+    <button id="load" class="primary" type="button" title="Include this file (Cmd+Enter or Ctrl+Enter)">Include</button>
+    <button id="restart" type="button" title="Fresh image">Restart</button>
     <button id="install" hidden type="button">Install</button>
   </header>
   <div id="workspace">
     <aside id="tree">
       <div class="tools">
         <button id="new-file" type="button">New</button>
-        <button id="delete" type="button">Delete</button>
+        <button id="close-file" type="button" title="Close this tab. You choose whether to save.">Close</button>
       </div>
       <form id="name-form" hidden>
-        <input id="name-input" placeholder="name.fth or lib/name.fth" aria-label="New file path" autocomplete="off" spellcheck="false">
+        <input id="name-input" placeholder="Save as name.fth or lib/name.fth" aria-label="Save as" autocomplete="off" spellcheck="false">
       </form>
       <div id="listing"></div>
     </aside>
     <div id="main">
       <section id="edit">
-        <textarea id="editor" wrap="off" spellcheck="false" autocomplete="off" aria-label="Forth source"></textarea>
+        <div id="tabs"></div>
+        <div id="banner" hidden>
+          <strong>View mode</strong>
+          <span>Read-only — typing asks to switch to Edit</span>
+          <span class="spacer"></span>
+          <button id="leave-view" type="button">Edit</button>
+        </div>
+        <div id="editor-row">
+          <div id="gutter" aria-hidden="true"><div id="gutter-inner"><div id="gutter-mark" hidden></div><pre id="gutter-nums"></pre></div></div>
+          <textarea id="editor" wrap="off" spellcheck="false" autocomplete="off" aria-label="Forth source"></textarea>
+        </div>
       </section>
       <div id="split" role="separator" aria-orientation="horizontal" aria-label="Resize console" aria-controls="console" tabindex="0" title="Drag to resize the console"></div>
       <section id="console">
@@ -208,6 +325,16 @@
       </section>
     </div>
   </div>
-  <script type="module" src="app.js?v=19"></script>
+  <div id="save-ask" hidden>
+    <div class="card">
+      <p id="save-ask-text"></p>
+      <div class="choices">
+        <button type="button" data-choice="save">Save</button>
+        <button type="button" data-choice="discard">Don't Save</button>
+        <button type="button" data-choice="cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="app.js?v=31"></script>
 </body>
 </html>

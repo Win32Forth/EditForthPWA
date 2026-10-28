@@ -21,10 +21,6 @@ VARIABLE DBG-LINE-COL
 : DBG-CURSOR-ON ( -- ) ;
 : DBG-CURSOR-OFF ( -- ) ;
 : DBG-WHEEL-DO ( u -- ) DROP ;
-: (BP-GO) ( -- ) ;
-: (RUNTO-IP) ( addr -- ) DROP ;
-: RUNTO-OFF@ ( -- off ) 0 ;
-: RUNTO-STATUS! ( n -- ) DROP ;
 
 CREATE BREAK-TABLE 8 CELLS ALLOT
 BREAK-TABLE 8 CELLS ERASE

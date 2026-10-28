@@ -29,7 +29,7 @@
 typedef struct ef_vm ef_vm;
 
 typedef void (*ef_emit_fn)(void *ctx, int ch);
-/* Return the next input byte, or -1 if none. */
+/* Next key event, or -1 if none. KEY keeps the low 8 bits. EKEY keeps the cell. */
 typedef int (*ef_key_fn)(void *ctx);
 
 ef_vm *ef_create(void);

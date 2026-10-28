@@ -8,6 +8,27 @@ static ef_vm *g_vm;
 static char *g_out;
 static size_t g_len;
 static size_t g_cap;
+static int g_posted;
+static int g_has_key;
+static int g_waiting;
+
+/* Yield so the page can show the pause text and post the next key.
+   A key typed while nothing is waiting is ignored, so a slow eval
+   cannot arm the next DEBUG by accident. */
+static int web_key(void *ctx) {
+    (void)ctx;
+    g_has_key = 0;
+    g_waiting = 1;
+    EM_ASM({
+        if (typeof Module._forthPump === "function") Module._forthPump();
+    });
+    while (!g_has_key) {
+        emscripten_sleep(10);
+    }
+    g_waiting = 0;
+    g_has_key = 0;
+    return g_posted;
+}
 
 static void out_clear(void) {
     g_len = 0;
@@ -43,7 +64,24 @@ int ef_web_boot(void) {
         return -8;
     }
     ef_set_emit(g_vm, web_emit, NULL);
+    ef_set_key(g_vm, web_key, NULL);
+    g_has_key = 0;
+    g_waiting = 0;
     return ef_boot(g_vm);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void ef_web_post_key(int c) {
+    if (!g_waiting) {
+        return;
+    }
+    g_posted = c;
+    g_has_key = 1;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int ef_web_key_waiting(void) {
+    return g_waiting;
 }
 
 EMSCRIPTEN_KEEPALIVE

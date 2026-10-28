@@ -3,14 +3,27 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static char cap[65536];
 static size_t cap_n;
 static int capturing;
 
+static int stdin_key(void *ctx) {
+    FILE *fp = ctx ? ctx : stdin;
+    int c;
+    fflush(stdout);
+    c = fgetc(fp);
+    return c == EOF ? -1 : c;
+}
+
 static void emit_out(void *ctx, int ch) {
     FILE *fp = ctx ? ctx : stdout;
-    fputc(ch, fp);
+    if (ch == '\f' && isatty(fileno(fp))) {
+        fputs("\033[2J\033[H", fp);
+    } else {
+        fputc(ch, fp);
+    }
     if (capturing && cap_n + 1 < sizeof cap) {
         cap[cap_n++] = (char)ch;
         cap[cap_n] = 0;
@@ -149,7 +162,11 @@ static void repl(ef_vm *vm) {
             break;
         }
         if (rc) {
-            printf("throw %d\n", rc);
+            if (ef_error_name(vm)[0]) {
+                printf("throw %d at %s:%d\n", rc, ef_error_name(vm), ef_error_line(vm));
+            } else {
+                printf("throw %d\n", rc);
+            }
         } else {
             fputs(" ok\n", stdout);
         }
@@ -168,6 +185,7 @@ int main(int argc, char **argv) {
         return fail_msg("ef_create failed");
     }
     ef_set_emit(vm, emit_out, stdout);
+    ef_set_key(vm, stdin_key, stdin);
     rc = ef_boot(vm);
     if (rc) {
         fprintf(stderr, "boot failed %d\n", rc);

@@ -1,11 +1,15 @@
 #include "ef32.h"
 
 #include <ctype.h>
+#include <dirent.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <sys/stat.h>
 #include <sys/time.h>
+#include <unistd.h>
 
 #define CELL 4
 #define EF_STACK 512
@@ -13,6 +17,7 @@
 #define EF_THREADS 16
 #define EF_ORDER_MAX 8
 #define EF_CF 64
+#define DBG_FRAME_MAX 64
 #define EF_SRC_MAX (256 * 1024)
 #define EF_WORD_MAX 128
 #define EF_IMAGE0 (1024 * 1024)
@@ -132,6 +137,9 @@ struct ef_vm {
 
     struct ef_mounted *mounted;
     char include_dir[512];
+    /* Empty means the process directory (native) or the mount root (page).
+       Never absolute: INCLUDE joins this onto a relative name. */
+    char logical_cwd[512];
     char src_name[256];
     char err_name[256];
     int err_line;
@@ -149,6 +157,44 @@ struct ef_vm {
     int local_init_n;
     int local_reverse;
     int local_declaring;
+
+    /* rsp is a count that grows. ARM's RSP is a descending pointer, so every
+       floor / over / out compare here is the other way around. over and out
+       use -1 as unset: 0 is a real return-stack depth. */
+    int dbg_armed;
+    int dbg_busy;
+    int dbg_abort;
+    int dbg_bp_go;
+    int dbg_break_asap;
+    int dbg_floor_on;
+    int dbg_fromlib;
+    int dbg_need_intro;
+    int dbg_need_stacks;
+    int dbg_skip_nl;
+    int dbg_midline;
+    int dbg_help_shown;
+    int dbg_line_col;
+    int dbg_frame_n;
+    int32_t dbg_floor;
+    int32_t dbg_over;
+    int32_t dbg_out;
+    int32_t dbg_runto_ip;
+    int32_t dbg_runto_off;
+    int32_t dbg_runto_status;
+    int32_t dbg_break_min;
+    int32_t dbg_pause_rsp;
+    int32_t dbg_xt;
+    int32_t dbg_inline;
+    int32_t dbg_ip;
+    int32_t dbg_cfa;
+    int32_t dbg_body;
+    int32_t dbg_host_off;
+    int32_t dbg_host_len;
+    int32_t dbg_fr_rsp[DBG_FRAME_MAX];
+    int32_t dbg_fr_cfa[DBG_FRAME_MAX];
+    int32_t xt_dbg_off;
+    int32_t xt_execute;
+    int32_t xt_catch;
 };
 
 typedef struct ef_mounted {
@@ -162,10 +208,37 @@ typedef int (*ef_prim_fn)(ef_vm *vm);
 static ef_prim_fn g_prims[512];
 static int g_prim_count;
 
+static void hook_set(ef_vm *vm, const char *name, int32_t v);
+static int32_t hook_get(ef_vm *vm, const char *name, int32_t fallback);
+
+/* While armed, a non-newline leaves DBG-MIDLINE set so the next pause
+   starts on its own line. The Mac emitter does this on every byte. */
 static void emit_ch(ef_vm *vm, int ch) {
     if (vm->emit) {
         vm->emit(vm->emit_ctx, ch);
     }
+    if (!vm->dbg_armed) {
+        return;
+    }
+    /* Forth may have stored these since the last byte. */
+    vm->dbg_line_col = hook_get(vm, "DBG-LINE-COL", vm->dbg_line_col);
+    vm->dbg_midline = hook_get(vm, "DBG-MIDLINE", vm->dbg_midline);
+    if (ch == '\n') {
+        vm->dbg_line_col = 0;
+        vm->dbg_midline = 0;
+    } else if (ch == '\b') {
+        if (vm->dbg_line_col > 0) {
+            vm->dbg_line_col--;
+        }
+        vm->dbg_midline = vm->dbg_line_col ? 1 : 0;
+    } else if ((ch & 0xC0) != 0x80) {
+        vm->dbg_line_col++;
+        vm->dbg_midline = 1;
+    } else {
+        return;
+    }
+    hook_set(vm, "DBG-LINE-COL", vm->dbg_line_col);
+    hook_set(vm, "DBG-MIDLINE", vm->dbg_midline);
 }
 
 static void emit_str(ef_vm *vm, const char *s) {
@@ -765,27 +838,31 @@ static int32_t skip_counted(ef_vm *vm, int32_t ip) {
     return (ip + 1 + n + 3) & ~3;
 }
 
-static void emit_int(ef_vm *vm, int32_t value, int base, int is_signed) {
+static void emit_uint(ef_vm *vm, uint32_t u, int base) {
     char buf[40];
     int n = 0;
-    uint32_t u;
     if (base < 2 || base > 36) {
         base = 10;
     }
+    do {
+        uint32_t d = u % (uint32_t)base;
+        buf[n++] = (char)(d < 10 ? '0' + d : 'A' + (int)d - 10);
+        u /= (uint32_t)base;
+    } while (u && n < (int)sizeof buf);
+    while (n > 0) {
+        emit_ch(vm, buf[--n]);
+    }
+}
+
+static void emit_int(ef_vm *vm, int32_t value, int base, int is_signed) {
+    uint32_t u;
     if (is_signed && value < 0) {
         emit_ch(vm, '-');
         u = (uint32_t)(-(int64_t)value);
     } else {
         u = (uint32_t)value;
     }
-    do {
-        uint32_t d = u % (uint32_t)base;
-        buf[n++] = (char)(d < 10 ? '0' + d : 'A' + d - 10);
-        u /= (uint32_t)base;
-    } while (u && n < (int)sizeof buf);
-    while (n > 0) {
-        emit_ch(vm, buf[--n]);
-    }
+    emit_uint(vm, u, base);
     emit_ch(vm, ' ');
 }
 
@@ -824,6 +901,8 @@ static int divide(ef_vm *vm, int32_t a, int32_t b, int32_t *quot, int32_t *rem) 
 }
 
 static int exec_one(ef_vm *vm, int32_t cfa, int from_inner);
+static void dbg_note_frame(ef_vm *vm, int32_t cfa);
+static int dbg_consider(ef_vm *vm, int32_t xt);
 
 static int inner(ef_vm *vm, int stop_rsp) {
     int guard = 0;
@@ -839,11 +918,16 @@ static int inner(ef_vm *vm, int stop_rsp) {
             vm->in_inner = prev;
             return EF_THROW;
         }
-        vm->ip += CELL;
         if (xt == 0) {
             vm->in_inner = prev;
             return fail(vm, -16, "null xt\n");
         }
+        /* Pause before the IP moves so the inline cell is still the next one. */
+        if (dbg_consider(vm, xt)) {
+            vm->in_inner = prev;
+            return EF_THROW;
+        }
+        vm->ip += CELL;
         if (exec_one(vm, xt, 1)) {
             vm->in_inner = prev;
             return EF_THROW;
@@ -868,6 +952,7 @@ static int exec_one(ef_vm *vm, int32_t cfa, int from_inner) {
             if (rpush(vm, vm->ip)) {
                 return EF_THROW;
             }
+            dbg_note_frame(vm, cfa);
             if (code == EF_DOCOL) {
                 vm->ip = cfa + 2 * CELL;
             } else if (load_cell(vm, cfa + CELL, &vm->ip)) {
@@ -880,6 +965,7 @@ static int exec_one(ef_vm *vm, int32_t cfa, int from_inner) {
         if (rpush(vm, 0)) {
             return EF_THROW;
         }
+        dbg_note_frame(vm, cfa);
         if (code == EF_DOCOL) {
             vm->ip = cfa + 2 * CELL;
         } else if (load_cell(vm, cfa + CELL, &vm->ip)) {
@@ -1380,6 +1466,19 @@ static int p_key(ef_vm *vm) {
         return fail(vm, -21, "KEY end of input\n");
     }
     return push(vm, c & 0xff);
+}
+
+/* Full cell. KEY masks to a byte, so a tagged function key has to come through here. */
+static int p_ekey(ef_vm *vm) {
+    int c;
+    if (!vm->key) {
+        return fail(vm, -21, "KEY is not connected\n");
+    }
+    c = vm->key(vm->key_ctx);
+    if (c < 0) {
+        return fail(vm, -21, "KEY end of input\n");
+    }
+    return push(vm, c);
 }
 
 static int p_bye(ef_vm *vm) {
@@ -2075,7 +2174,42 @@ static int contains_ci(const char *name, const char *filt, int flen) {
     return 0;
 }
 
+/* A listed name: not smudged, non-empty, and containing the filter. */
+static int word_listed(ef_vm *vm, int32_t cfa, const char *filt, int flen, char *name, int namemax) {
+    if (smudged(vm, cfa)) {
+        return 0;
+    }
+    copy_name(vm, cfa, name, namemax);
+    return name[0] && contains_ci(name, filt, flen);
+}
+
+/* FORTH, the VOCABULARY whose body is this wid, or "wid". */
+static void emit_wid_name(ef_vm *vm, int32_t wid) {
+    int th;
+    if (wid == vm->forth_wid) {
+        emit_str(vm, "FORTH");
+        return;
+    }
+    for (th = 0; th < EF_THREADS; th++) {
+        int32_t cfa = uv(vm, vm->forth_wid + th * CELL);
+        int guard = 0;
+        while (cfa && guard++ < 1000000) {
+            if (uv(vm, cfa) == EF_DODOES && cfa + 2 * CELL == wid) {
+                char name[128];
+                copy_name(vm, cfa, name, sizeof name);
+                if (name[0]) {
+                    emit_str(vm, name);
+                    return;
+                }
+            }
+            cfa = uv(vm, cfa - 3 * CELL);
+        }
+    }
+    emit_str(vm, "wid");
+}
+
 /* WORDS [filter] — names in the first search-order wordlist.
+   Header is "--- NAME (n) ---" with n in the current base.
    The next word is the filter, not a command. */
 static int p_words(ef_vm *vm) {
     char filt[128];
@@ -2083,6 +2217,7 @@ static int p_words(ef_vm *vm) {
     int th;
     int32_t wid;
     int norder;
+    int count = 0;
     int first = 1;
     norder = uv(vm, UV_ORDERN);
     wid = norder > 0 ? uv(vm, UV_ORDER) : vm->forth_wid;
@@ -2091,17 +2226,31 @@ static int p_words(ef_vm *vm) {
     }
     for (th = 0; th < EF_THREADS; th++) {
         int32_t cfa = uv(vm, wid + th * CELL);
-        while (cfa) {
-            if (!smudged(vm, cfa)) {
-                char name[128];
-                copy_name(vm, cfa, name, sizeof name);
-                if (name[0] && contains_ci(name, filt, flen)) {
-                    if (!first) {
-                        emit_ch(vm, ' ');
-                    }
-                    first = 0;
-                    emit_str(vm, name);
+        int guard = 0;
+        while (cfa && guard++ < 1000000) {
+            char name[128];
+            if (word_listed(vm, cfa, filt, flen, name, sizeof name)) {
+                count++;
+            }
+            cfa = uv(vm, cfa - 3 * CELL);
+        }
+    }
+    emit_str(vm, "--- ");
+    emit_wid_name(vm, wid);
+    emit_str(vm, " (");
+    emit_uint(vm, (uint32_t)count, base_of(vm));
+    emit_str(vm, ") ---\n");
+    for (th = 0; th < EF_THREADS; th++) {
+        int32_t cfa = uv(vm, wid + th * CELL);
+        int guard = 0;
+        while (cfa && guard++ < 1000000) {
+            char name[128];
+            if (word_listed(vm, cfa, filt, flen, name, sizeof name)) {
+                if (!first) {
+                    emit_ch(vm, ' ');
                 }
+                first = 0;
+                emit_str(vm, name);
             }
             cfa = uv(vm, cfa - 3 * CELL);
         }
@@ -2486,31 +2635,46 @@ static void add_cand(char cands[][512], int *nc, const char *s) {
             return;
         }
     }
-    if (*nc >= 3) {
+    if (*nc >= 5) {
         return;
     }
     snprintf(cands[*nc], 512, "%s", tmp);
     (*nc)++;
 }
 
+/* Cold words are stamped view file "boot" (build/boot.inc). */
+static int open_embedded_boot(char **owned, int *len);
+
 /* Mounted paths first, then disk. include_dir and the directory saved by
    BEGIN-LOAD-CWD are both tried: BEGIN runs before OPEN-FILE. */
 static int resolve_file(ef_vm *vm, const char *name, char *resolved, size_t rmax,
                         char **owned, int *len) {
-    char cands[3][512];
+    char cands[5][512];
     char joined[512];
     int nc = 0;
     int i;
+    static const char libprefix[] = "Resources/Library/";
     *owned = NULL;
     *len = 0;
     resolved[0] = 0;
     add_cand(cands, &nc, name);
+    /* FROMLIB plants Resources/Library/name. An open Library folder mounts
+       the same file as name, with no Resources/Library prefix. */
+    if (strncmp(name, libprefix, sizeof libprefix - 1) == 0) {
+        add_cand(cands, &nc, name + (sizeof libprefix - 1));
+    }
     if (vm->include_dir[0]) {
         snprintf(joined, sizeof joined, "%s/%s", vm->include_dir, name);
         add_cand(cands, &nc, joined);
     }
     if (vm->cwd_n > 0 && vm->cwd_stack[vm->cwd_n - 1][0]) {
         snprintf(joined, sizeof joined, "%s/%s", vm->cwd_stack[vm->cwd_n - 1], name);
+        add_cand(cands, &nc, joined);
+    }
+    /* Session directory from CHDIR. Tried after the include stack so a nested
+       load still follows the file that is open. */
+    if (vm->logical_cwd[0]) {
+        snprintf(joined, sizeof joined, "%s/%s", vm->logical_cwd, name);
         add_cand(cands, &nc, joined);
     }
     for (i = 0; i < nc; i++) {
@@ -2529,9 +2693,14 @@ static int resolve_file(ef_vm *vm, const char *name, char *resolved, size_t rmax
             return 1;
         }
     }
-#else
-    (void)rmax;
 #endif
+    /* A mounted or on-disk "boot" already won. Page mountClear cannot drop
+       this copy: it is the concatenated cold source whose line numbers match
+       VIEW-LINE (kernel1 2OVER is line 67). */
+    if (name && strcmp(name, "boot") == 0 && open_embedded_boot(owned, len) == 0) {
+        snprintf(resolved, rmax, "boot");
+        return 1;
+    }
     return 0;
 }
 
@@ -3020,9 +3189,645 @@ static int p_block_buf(ef_vm *vm) { return push(vm, BLOCK_BUF_ADDR); }
 static int p_ro(ef_vm *vm) { return push(vm, 1); }
 static int p_rw(ef_vm *vm) { return push(vm, 3); }
 static int p_bin(ef_vm *vm) { (void)vm; return EF_OK; }
-static int p_dbg(ef_vm *vm) { (void)vm; return EF_OK; }
 static int p_load_enter(ef_vm *vm) { (void)vm; return EF_OK; }
-static int p_resolve_key(ef_vm *vm) { (void)vm; return EF_OK; }
+
+static int load_quiet(ef_vm *vm, int32_t addr, int32_t *out) {
+    if (addr < 0 || (addr & 3) || (size_t)addr + (size_t)CELL > vm->count) {
+        *out = 0;
+        return -1;
+    }
+    memcpy(out, vm->base + addr, CELL);
+    return 0;
+}
+
+static void hook_set(ef_vm *vm, const char *name, int32_t v) {
+    int32_t cfa = find_word(vm, name, (int)strlen(name), NULL);
+    if (!cfa) {
+        return;
+    }
+    (void)store_cell(vm, cfa + 2 * CELL, v);
+}
+
+static int32_t hook_get(ef_vm *vm, const char *name, int32_t fallback) {
+    int32_t cfa = find_word(vm, name, (int)strlen(name), NULL);
+    int32_t v = 0;
+    if (!cfa || load_quiet(vm, cfa + 2 * CELL, &v)) {
+        return fallback;
+    }
+    return v;
+}
+
+static void dbg_note_frame(ef_vm *vm, int32_t cfa) {
+    int n = 0;
+    /* The pause UI runs nested while dbg_busy. Its colon frames sit at the
+       same return depth >R produces, and the next pause would treat the
+       pause word as the word being stepped. */
+    if (vm->dbg_busy) {
+        return;
+    }
+    while (n < vm->dbg_frame_n && vm->dbg_fr_rsp[n] < vm->rsp) {
+        n++;
+    }
+    vm->dbg_frame_n = n;
+    if (vm->dbg_frame_n >= DBG_FRAME_MAX) {
+        memmove(vm->dbg_fr_rsp, vm->dbg_fr_rsp + 1,
+                (size_t)(DBG_FRAME_MAX - 1) * sizeof vm->dbg_fr_rsp[0]);
+        memmove(vm->dbg_fr_cfa, vm->dbg_fr_cfa + 1,
+                (size_t)(DBG_FRAME_MAX - 1) * sizeof vm->dbg_fr_cfa[0]);
+        vm->dbg_frame_n = DBG_FRAME_MAX - 1;
+    }
+    vm->dbg_fr_rsp[vm->dbg_frame_n] = vm->rsp;
+    vm->dbg_fr_cfa[vm->dbg_frame_n] = cfa;
+    vm->dbg_frame_n++;
+}
+
+static void dbg_disarm(ef_vm *vm) {
+    vm->dbg_armed = 0;
+    vm->dbg_floor_on = 0;
+    vm->dbg_bp_go = 0;
+    vm->dbg_runto_ip = 0;
+    vm->dbg_break_asap = 0;
+    vm->dbg_over = -1;
+    vm->dbg_out = -1;
+}
+
+static void dbg_sync_flags(ef_vm *vm) {
+    hook_set(vm, "DBG-NEED-INTRO", vm->dbg_need_intro);
+    hook_set(vm, "DBG-NEED-STACKS", vm->dbg_need_stacks);
+    hook_set(vm, "DBG-SKIP-NL", vm->dbg_skip_nl);
+    hook_set(vm, "DBG-MIDLINE", vm->dbg_midline);
+    hook_set(vm, "DBG-HELP-SHOWN", vm->dbg_help_shown);
+    hook_set(vm, "DBG-LINE-COL", vm->dbg_line_col);
+}
+
+static void dbg_read_flags(ef_vm *vm) {
+    vm->dbg_need_intro = hook_get(vm, "DBG-NEED-INTRO", vm->dbg_need_intro);
+    vm->dbg_need_stacks = hook_get(vm, "DBG-NEED-STACKS", vm->dbg_need_stacks);
+    vm->dbg_skip_nl = hook_get(vm, "DBG-SKIP-NL", vm->dbg_skip_nl);
+    vm->dbg_midline = hook_get(vm, "DBG-MIDLINE", vm->dbg_midline);
+    vm->dbg_help_shown = hook_get(vm, "DBG-HELP-SHOWN", vm->dbg_help_shown);
+    vm->dbg_line_col = hook_get(vm, "DBG-LINE-COL", vm->dbg_line_col);
+}
+
+static int dbg_bp_match(ef_vm *vm, int32_t xt) {
+    int32_t table = find_word(vm, "BREAK-TABLE", 11, NULL);
+    int32_t enables = find_word(vm, "BREAK-ENABLES", 13, NULL);
+    int i;
+    if (!table || !enables || !xt) {
+        return 0;
+    }
+    for (i = 0; i < 8; i++) {
+        int32_t slot = 0;
+        int32_t en = 0;
+        if (load_quiet(vm, table + 2 * CELL + i * CELL, &slot) ||
+            load_quiet(vm, enables + 2 * CELL + i * CELL, &en)) {
+            return 0;
+        }
+        if (slot && en && slot == xt) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void dbg_resolve_enclosing(ef_vm *vm) {
+    int i;
+    int best = -1;
+    int32_t cfa = 0;
+    for (i = 0; i < vm->dbg_frame_n; i++) {
+        if (vm->dbg_fr_rsp[i] <= vm->rsp) {
+            best = i;
+        }
+    }
+    if (best >= 0) {
+        cfa = vm->dbg_fr_cfa[best];
+    }
+    vm->dbg_cfa = cfa;
+    vm->dbg_body = cfa ? (vm->dbg_ip - (cfa + 2 * CELL)) / CELL : 0;
+}
+
+static void dbg_print_name(ef_vm *vm) {
+    char buf[80];
+    copy_name(vm, vm->dbg_xt, buf, (int)sizeof buf);
+    emit_str(vm, buf[0] ? buf : "?");
+}
+
+static int dbg_name_ok(ef_vm *vm, int32_t xt) {
+    int32_t nfa;
+    int n;
+    int i;
+    int32_t here;
+    if (!xt || (xt & 3) || xt < DICT_ORIGIN) {
+        return 0;
+    }
+    here = uv(vm, UV_DP);
+    if (xt >= here || (size_t)xt + (size_t)CELL > vm->count) {
+        return 0;
+    }
+    nfa = nfa_of(vm, xt);
+    if (nfa < DICT_ORIGIN || nfa >= xt || (size_t)nfa >= vm->count) {
+        return 0;
+    }
+    n = vm->base[nfa] & 0x7f;
+    if (n < 1 || n > 63) {
+        return 0;
+    }
+    for (i = 0; i < n; i++) {
+        unsigned char c = vm->base[nfa + 1 + i];
+        if (c < 32 || c > 126) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void dbg_print_inline(ef_vm *vm) {
+    int32_t xt = vm->dbg_xt;
+    int32_t inl = vm->dbg_inline;
+    if (xt == vm->xt_lit) {
+        emit_ch(vm, ' ');
+        if (dbg_name_ok(vm, inl)) {
+            char buf[80];
+            copy_name(vm, inl, buf, (int)sizeof buf);
+            emit_str(vm, buf[0] ? buf : "?");
+        } else {
+            emit_int(vm, inl, base_of(vm), 1);
+        }
+        return;
+    }
+    if (xt == vm->xt_branch || xt == vm->xt_zbranch || xt == vm->xt_ef_branch ||
+        xt == vm->xt_ef_zbranch || xt == vm->xt_loop || xt == vm->xt_ploop) {
+        int32_t cells = inl / CELL;
+        emit_ch(vm, ' ');
+        if (cells >= 0) {
+            emit_ch(vm, '+');
+        }
+        emit_int(vm, cells, 10, 1);
+        emit_str(vm, "CELLS");
+    }
+}
+
+static int dbg_intoable(ef_vm *vm, int32_t xt) {
+    int32_t code = 0;
+    if (!xt || load_quiet(vm, xt, &code)) {
+        return 0;
+    }
+    if (code == EF_DOCOL || code == EF_DODOES) {
+        return 1;
+    }
+    return xt == vm->xt_execute || xt == vm->xt_catch;
+}
+
+/* Data: TOS on the right, at most 6, with ... when deeper.
+   Return: nearest on the left, at most 4, clipped to the DBG-ON floor.
+   While the pause UI is nested, show the debuggee return stack. */
+static void dbg_print_sr(ef_vm *vm) {
+    int top = vm->dbg_busy ? vm->dbg_pause_rsp : vm->rsp;
+    int bot = 0;
+    int depth;
+    int show;
+    int start;
+    int i;
+    if (vm->dbg_floor_on && vm->dbg_floor > 0 && vm->dbg_floor < top) {
+        bot = vm->dbg_floor;
+    }
+    depth = top - bot;
+    if (depth < 0) {
+        depth = 0;
+    }
+    emit_ch(vm, 'S');
+    emit_ch(vm, '(');
+    emit_uint(vm, (uint32_t)vm->sp, base_of(vm));
+    emit_str(vm, "): ");
+    if (vm->sp > 6) {
+        emit_str(vm, "... ");
+    }
+    show = vm->sp > 6 ? 6 : vm->sp;
+    start = vm->sp - show;
+    for (i = start; i < vm->sp; i++) {
+        emit_int(vm, vm->stack[i], base_of(vm), 1);
+    }
+    emit_str(vm, "R(");
+    emit_uint(vm, (uint32_t)depth, base_of(vm));
+    emit_str(vm, "): ");
+    show = depth > 4 ? 4 : depth;
+    for (i = 0; i < show; i++) {
+        int idx = top - 1 - i;
+        if (idx < 0 || idx >= EF_RSTACK) {
+            break;
+        }
+        emit_int(vm, vm->rstack[idx], base_of(vm), 1);
+    }
+    if (depth > 4) {
+        emit_str(vm, "...");
+    }
+}
+
+static void dbg_help(ef_vm *vm) {
+    emit_str(vm,
+        "[F6/Space/o/Return=over F7/i=into(I>>) F8=out Esc/q=abort Cmd-Shift-Y/g=go h=help]\n");
+}
+
+static void dbg_step_over(ef_vm *vm) {
+    int32_t code = 0;
+    dbg_read_flags(vm);
+    vm->dbg_need_stacks = 1;
+    vm->dbg_out = -1;
+    vm->dbg_over = -1;
+    if (vm->dbg_xt && !load_quiet(vm, vm->dbg_xt, &code) && code == EF_DOCOL) {
+        vm->dbg_over = vm->dbg_pause_rsp;
+    }
+    dbg_sync_flags(vm);
+}
+
+static void dbg_step_into(ef_vm *vm) {
+    dbg_read_flags(vm);
+    vm->dbg_need_stacks = 1;
+    vm->dbg_out = -1;
+    vm->dbg_over = -1;
+    dbg_sync_flags(vm);
+}
+
+static void dbg_step_out(ef_vm *vm) {
+    dbg_read_flags(vm);
+    vm->dbg_need_stacks = 1;
+    vm->dbg_over = -1;
+    vm->dbg_out = vm->dbg_pause_rsp;
+    dbg_sync_flags(vm);
+}
+
+static void dbg_go(ef_vm *vm) {
+    dbg_read_flags(vm);
+    vm->dbg_need_stacks = 0;
+    vm->dbg_need_intro = 0;
+    vm->dbg_help_shown = 0;
+    vm->dbg_over = -1;
+    vm->dbg_out = -1;
+    if (vm->dbg_midline) {
+        emit_ch(vm, '\n');
+    }
+    vm->dbg_midline = 0;
+    dbg_sync_flags(vm);
+    if (!vm->dbg_bp_go && !vm->dbg_runto_ip) {
+        dbg_disarm(vm);
+    }
+}
+
+static void dbg_abort_session(ef_vm *vm) {
+    dbg_read_flags(vm);
+    vm->dbg_need_stacks = 0;
+    vm->dbg_need_intro = 0;
+    vm->dbg_help_shown = 0;
+    if (vm->dbg_midline) {
+        emit_ch(vm, '\n');
+    }
+    vm->dbg_midline = 0;
+    emit_str(vm, "DEBUG aborted\n");
+    vm->dbg_abort = -1;
+    vm->dbg_runto_off = 0;
+    vm->dbg_runto_status = 0;
+    dbg_disarm(vm);
+    dbg_sync_flags(vm);
+}
+
+static int dbg_mode_of(ef_vm *vm, int c) {
+    dbg_read_flags(vm);
+    if (vm->dbg_skip_nl) {
+        if (c == 10 || c == 13) {
+            return 0;
+        }
+        vm->dbg_skip_nl = 0;
+        dbg_sync_flags(vm);
+    }
+    if (c == 'h' || c == 'H') {
+        return 7;
+    }
+    if (c == 135) {
+        return 8;
+    }
+    if (c == 134 || c == 'g' || c == 'G') {
+        return 4;
+    }
+    if (c == 27 || c == 'q' || c == 'Q') {
+        return 5;
+    }
+    if (c == ' ' || c == 13 || c == 'o' || c == 'O') {
+        return 1;
+    }
+    if (c == 'i' || c == 'I') {
+        return 2;
+    }
+    if (c == 0 || c == 3 || c == 7) {
+        return 6;
+    }
+    if (((unsigned)c & 0xff000000u) == 0x02000000u) {
+        int k = c & 0xffffff;
+        if (k == 16) {
+            return 1;
+        }
+        if (k == 17) {
+            return 2;
+        }
+        if (k == 18) {
+            return 3;
+        }
+    }
+    return 0;
+}
+
+static void dbg_apply(ef_vm *vm, int mode) {
+    if (mode == 1) {
+        dbg_step_over(vm);
+    } else if (mode == 2) {
+        dbg_step_into(vm);
+    } else if (mode == 3) {
+        dbg_step_out(vm);
+    } else if (mode == 4) {
+        dbg_go(vm);
+    } else if (mode == 5) {
+        dbg_abort_session(vm);
+    }
+}
+
+static int dbg_fallback(ef_vm *vm) {
+    dbg_read_flags(vm);
+    if (vm->dbg_need_intro) {
+        vm->dbg_need_intro = 0;
+        if (vm->dbg_midline) {
+            vm->dbg_midline = 0;
+            emit_ch(vm, '\n');
+        }
+        dbg_sync_flags(vm);
+        dbg_help(vm);
+        dbg_print_sr(vm);
+        emit_ch(vm, '\n');
+    } else if (vm->dbg_need_stacks) {
+        vm->dbg_need_stacks = 0;
+        if (vm->dbg_help_shown) {
+            vm->dbg_help_shown = 0;
+            emit_ch(vm, '\n');
+        }
+        dbg_sync_flags(vm);
+        dbg_print_sr(vm);
+        emit_ch(vm, '\n');
+    }
+    emit_str(vm, dbg_intoable(vm, vm->dbg_xt) ? "I>> " : ">> ");
+    dbg_print_name(vm);
+    dbg_print_inline(vm);
+    emit_ch(vm, '\n');
+    for (;;) {
+        int c;
+        int mode;
+        if (!vm->key) {
+            dbg_abort_session(vm);
+            return EF_OK;
+        }
+        c = vm->key(vm->key_ctx);
+        if (c < 0) {
+            dbg_abort_session(vm);
+            return EF_OK;
+        }
+        mode = dbg_mode_of(vm, c);
+        if (mode == 0 || mode == 6 || mode == 8) {
+            continue;
+        }
+        if (mode == 7) {
+            if (!vm->dbg_help_shown) {
+                dbg_help(vm);
+                vm->dbg_help_shown = -1;
+                dbg_sync_flags(vm);
+            }
+            continue;
+        }
+        dbg_apply(vm, mode);
+        return EF_OK;
+    }
+}
+
+static int dbg_want_pause(ef_vm *vm, int32_t xt) {
+    if (vm->dbg_busy || !vm->dbg_armed) {
+        return 0;
+    }
+    if (vm->dbg_floor_on) {
+        if (vm->rsp == vm->dbg_floor) {
+            return 0;
+        }
+        if (vm->rsp < vm->dbg_floor) {
+            dbg_disarm(vm);
+            return 0;
+        }
+    }
+    if (vm->dbg_out >= 0 && vm->rsp >= vm->dbg_out) {
+        return 0;
+    }
+    if (vm->dbg_over >= 0 && vm->rsp > vm->dbg_over) {
+        return 0;
+    }
+    if (vm->dbg_runto_ip) {
+        if (vm->ip == vm->dbg_runto_ip) {
+            vm->dbg_runto_ip = 0;
+            vm->dbg_bp_go = 0;
+        } else if (vm->dbg_bp_go) {
+            if (!dbg_bp_match(vm, xt)) {
+                return 0;
+            }
+            vm->dbg_bp_go = 0;
+            vm->dbg_runto_ip = 0;
+        } else {
+            return 0;
+        }
+    } else if (vm->dbg_bp_go) {
+        if (!dbg_bp_match(vm, xt)) {
+            return 0;
+        }
+        vm->dbg_bp_go = 0;
+    }
+    if (xt == vm->xt_dbg_off) {
+        return 0;
+    }
+    vm->dbg_over = -1;
+    vm->dbg_out = -1;
+    return 1;
+}
+
+static void dbg_snapshot(ef_vm *vm, int32_t xt) {
+    int32_t inl = 0;
+    vm->dbg_pause_rsp = vm->rsp;
+    vm->dbg_xt = xt;
+    vm->dbg_ip = vm->ip;
+    if (load_quiet(vm, vm->ip + CELL, &inl)) {
+        inl = 0;
+    }
+    vm->dbg_inline = inl;
+    dbg_resolve_enclosing(vm);
+}
+
+static int dbg_consider(ef_vm *vm, int32_t xt) {
+    int32_t pause_xt;
+    int rc;
+    if (!dbg_want_pause(vm, xt)) {
+        return EF_OK;
+    }
+    dbg_snapshot(vm, xt);
+    vm->dbg_busy = 1;
+    pause_xt = hook_get(vm, "DBG-PAUSE-XT", 0);
+    if (pause_xt) {
+        rc = exec_one(vm, pause_xt, 0);
+    } else {
+        rc = dbg_fallback(vm);
+    }
+    vm->dbg_busy = 0;
+    if (rc) {
+        return rc;
+    }
+    if (vm->dbg_abort) {
+        vm->dbg_abort = 0;
+        return fail(vm, -1, NULL);
+    }
+    return EF_OK;
+}
+
+static int p_dbg_on(ef_vm *vm) {
+    vm->dbg_floor = vm->rsp;
+    vm->dbg_floor_on = 1;
+    vm->dbg_armed = 1;
+    vm->dbg_bp_go = 0;
+    vm->dbg_runto_ip = 0;
+    vm->dbg_over = -1;
+    vm->dbg_out = -1;
+    vm->dbg_abort = 0;
+    vm->dbg_break_asap = 0;
+    vm->dbg_frame_n = 0;
+    vm->dbg_xt = 0;
+    vm->dbg_ip = 0;
+    vm->dbg_cfa = 0;
+    vm->dbg_body = 0;
+    vm->dbg_need_intro = 1;
+    vm->dbg_need_stacks = 0;
+    vm->dbg_skip_nl = 1;
+    vm->dbg_midline = 0;
+    vm->dbg_help_shown = 0;
+    vm->dbg_line_col = 0;
+    dbg_sync_flags(vm);
+    return EF_OK;
+}
+
+static int p_dbg_off(ef_vm *vm) {
+    vm->dbg_need_intro = 0;
+    vm->dbg_need_stacks = 0;
+    vm->dbg_skip_nl = 0;
+    vm->dbg_midline = 0;
+    vm->dbg_help_shown = 0;
+    vm->dbg_line_col = 0;
+    vm->dbg_abort = 0;
+    dbg_disarm(vm);
+    dbg_sync_flags(vm);
+    return EF_OK;
+}
+
+static int p_dbg_break_min(ef_vm *vm) {
+    int32_t a;
+    if (pop(vm, &a)) {
+        return EF_THROW;
+    }
+    vm->dbg_break_min = a;
+    return EF_OK;
+}
+
+static int p_dbg_xt_at(ef_vm *vm) { return push(vm, vm->dbg_xt); }
+static int p_dbg_ip_at(ef_vm *vm) { return push(vm, vm->dbg_ip); }
+static int p_dbg_cfa_at(ef_vm *vm) { return push(vm, vm->dbg_cfa); }
+static int p_dbg_body_n(ef_vm *vm) { return push(vm, vm->dbg_body); }
+static int p_dbg_dot_sr(ef_vm *vm) { dbg_print_sr(vm); return EF_OK; }
+static int p_dbg_print_inline(ef_vm *vm) { dbg_print_inline(vm); return EF_OK; }
+static int p_dbg_print_name(ef_vm *vm) { dbg_print_name(vm); return EF_OK; }
+static int p_dbg_intoable(ef_vm *vm) {
+    return push(vm, dbg_intoable(vm, vm->dbg_xt) ? -1 : 0);
+}
+static int p_dbg_host_paint(ef_vm *vm) { (void)vm; return EF_OK; }
+static int p_dbg_view_update(ef_vm *vm) { (void)vm; return EF_OK; }
+
+static int p_dbg_host_span(ef_vm *vm) {
+    int32_t len;
+    int32_t off;
+    if (pop(vm, &len) || pop(vm, &off)) {
+        return EF_THROW;
+    }
+    vm->dbg_host_off = off;
+    vm->dbg_host_len = len;
+    return EF_OK;
+}
+
+static int p_dbg_host_span_at(ef_vm *vm) {
+    return push2(vm, vm->dbg_host_off, vm->dbg_host_len);
+}
+
+static int p_dbg_step_over(ef_vm *vm) { dbg_step_over(vm); return EF_OK; }
+static int p_dbg_step_into(ef_vm *vm) { dbg_step_into(vm); return EF_OK; }
+static int p_dbg_step_out(ef_vm *vm) { dbg_step_out(vm); return EF_OK; }
+static int p_dbg_go(ef_vm *vm) { dbg_go(vm); return EF_OK; }
+static int p_dbg_abort(ef_vm *vm) { dbg_abort_session(vm); return EF_OK; }
+static int p_bp_go(ef_vm *vm) { vm->dbg_bp_go = 1; return EF_OK; }
+
+static int p_runto_ip(ef_vm *vm) {
+    int32_t a;
+    if (pop(vm, &a)) {
+        return EF_THROW;
+    }
+    vm->dbg_runto_ip = a;
+    return EF_OK;
+}
+
+static int p_runto_off_fetch(ef_vm *vm) { return push(vm, vm->dbg_runto_off); }
+
+static int p_runto_status(ef_vm *vm) {
+    int32_t n;
+    if (pop(vm, &n)) {
+        return EF_THROW;
+    }
+    vm->dbg_runto_status = n;
+    return EF_OK;
+}
+
+static int p_fromlib(ef_vm *vm) { vm->dbg_fromlib = 1; return EF_OK; }
+static int p_fromlib_q(ef_vm *vm) { return push(vm, vm->dbg_fromlib ? -1 : 0); }
+static int p_fromlib_off(ef_vm *vm) { vm->dbg_fromlib = 0; return EF_OK; }
+
+/* One-shot prefix for the next INCLUDED. Interpret S" keeps the blank after the quote. */
+static int p_resolve_key(ef_vm *vm) {
+    char raw[EF_PARSE_MAX];
+    char path[EF_PARSE_MAX];
+    const char *s;
+    const char *prefix = "Resources/Library/";
+    size_t plen;
+    int n;
+    if (!vm->dbg_fromlib) {
+        return EF_OK;
+    }
+    vm->dbg_fromlib = 0;
+    if (pop_text(vm, raw, (int)sizeof raw)) {
+        return EF_THROW;
+    }
+    s = raw;
+    n = (int)strlen(s);
+    if (n > 0 && s[0] == ' ') {
+        s++;
+        n--;
+    }
+    plen = strlen(prefix);
+    if (n >= (int)plen && strncmp(s, prefix, plen) == 0) {
+        return plant_parse(vm, s, n);
+    }
+    if ((size_t)n + plen >= sizeof path) {
+        return fail(vm, -16, "path too long\n");
+    }
+    memcpy(path, prefix, plen);
+    if (n > 0) {
+        memcpy(path + plen, s, (size_t)n);
+    }
+    path[plen + (size_t)n] = 0;
+    return plant_parse(vm, path, n + (int)plen);
+}
 static int p_boot0(ef_vm *vm) { return push(vm, 0); }
 
 static int p_ms_at(ef_vm *vm) {
@@ -3138,6 +3943,34 @@ static int p_two_fetch(ef_vm *vm) {
         return EF_THROW;
     }
     return push2(vm, lo, hi);
+}
+
+static int p_two_store(ef_vm *vm) {
+    int32_t a, lo, hi;
+    if (pop(vm, &a) || pop(vm, &hi) || pop(vm, &lo)) {
+        return EF_THROW;
+    }
+    if (store_cell(vm, a, lo) || store_cell(vm, a + CELL, hi)) {
+        return EF_THROW;
+    }
+    return EF_OK;
+}
+
+/* One source level: >IN and a count. RESTORE-INPUT returns 0 on success. */
+static int p_save_input(ef_vm *vm) {
+    return push2(vm, uv(vm, UV_IN), 1);
+}
+
+static int p_restore_input(ef_vm *vm) {
+    int32_t n, in = 0;
+    if (pop(vm, &n)) {
+        return EF_THROW;
+    }
+    if (n != 1 || pop(vm, &in) || in < 0 || in > vm->src_len) {
+        return push(vm, -1);
+    }
+    uv_set(vm, UV_IN, in);
+    return push(vm, 0);
 }
 
 static int p_two_to_r(ef_vm *vm) {
@@ -3256,6 +4089,20 @@ static int p_also(ef_vm *vm) {
     }
     uv_set(vm, UV_ORDER, top);
     uv_set(vm, UV_ORDERN, n + 1);
+    return EF_OK;
+}
+
+/* Drop the first-searched wordlist. One entry is left alone. */
+static int p_previous(ef_vm *vm) {
+    int n = uv(vm, UV_ORDERN);
+    int i;
+    if (n <= 1) {
+        return EF_OK;
+    }
+    for (i = 0; i < n - 1; i++) {
+        uv_set(vm, UV_ORDER + i * CELL, uv(vm, UV_ORDER + (i + 1) * CELL));
+    }
+    uv_set(vm, UV_ORDERN, n - 1);
     return EF_OK;
 }
 
@@ -3889,6 +4736,488 @@ static int p_line_source(ef_vm *vm) {
     return EF_OK;
 }
 
+/* Optional filespec for CHDIR / LS / DIR. 1 = a name, 0 = bare, -1 = throw.
+   The name stays on this line. A bare CHDIR must not swallow the next line. */
+static int take_spec(ef_vm *vm, char *dst, int dstmax) {
+    int in;
+    int len;
+    uint8_t *s;
+    int n = 0;
+    dst[0] = 0;
+    if (dstmax < 2) {
+        return 0;
+    }
+    in = uv(vm, UV_IN);
+    len = vm->src_len;
+    s = vm->base + SRC_ADDR;
+    while (in < len && (s[in] == ' ' || s[in] == '\t' || s[in] == '\r')) {
+        in++;
+    }
+    uv_set(vm, UV_IN, in);
+    if (in >= len || s[in] == '\n') {
+        return 0;
+    }
+    if (s[in] == '"') {
+        uv_set(vm, UV_IN, in + 1);
+        if (parse_until(vm, '"', dst, dstmax, &n)) {
+            return -1;
+        }
+        return 1;
+    }
+    while (in < len && !is_white(s[in])) {
+        if (n + 1 < dstmax) {
+            dst[n++] = (char)s[in];
+        }
+        in++;
+    }
+    dst[n] = 0;
+    uv_set(vm, UV_IN, in);
+    return 1;
+}
+
+static int seg_ok(const char *s, size_t n) {
+    size_t i;
+    if (n == 0 || n >= 128) {
+        return 0;
+    }
+    for (i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (isspace(c) || c == '"' || c == '\'' || c == '\\' || c == '/') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int spec_abs(const char *spec) {
+    if (!spec || !spec[0]) {
+        return 0;
+    }
+    if (spec[0] == '/' || spec[0] == '\\' || spec[0] == '~') {
+        return 1;
+    }
+    if (isalpha((unsigned char)spec[0]) && spec[1] == ':') {
+        return 1;
+    }
+    return 0;
+}
+
+/* Fold base and spec into a relative path. `..` may not climb above the root. */
+static int join_rel(const char *base, const char *spec, char *out, size_t outmax) {
+    char parts[40][128];
+    const char *srcs[2];
+    int np = 0;
+    int si;
+    size_t used = 0;
+    srcs[0] = base ? base : "";
+    srcs[1] = spec ? spec : "";
+    for (si = 0; si < 2; si++) {
+        const char *p = srcs[si];
+        if (si == 1 && (p[0] == '/' || p[0] == '\\')) {
+            return -1;
+        }
+        while (*p) {
+            const char *start;
+            size_t n;
+            while (*p == '/' || *p == '\\') {
+                p++;
+            }
+            if (!*p) {
+                break;
+            }
+            start = p;
+            while (*p && *p != '/' && *p != '\\') {
+                p++;
+            }
+            n = (size_t)(p - start);
+            if (n == 1 && start[0] == '.') {
+                continue;
+            }
+            if (n == 2 && start[0] == '.' && start[1] == '.') {
+                if (np <= 0) {
+                    return -1;
+                }
+                np--;
+                continue;
+            }
+            if (!seg_ok(start, n) || np >= 40) {
+                return -1;
+            }
+            memcpy(parts[np], start, n);
+            parts[np][n] = 0;
+            np++;
+        }
+    }
+    out[0] = 0;
+    for (si = 0; si < np; si++) {
+        size_t n = strlen(parts[si]);
+        if (used + n + (used ? 1 : 0) + 1 > outmax) {
+            return -1;
+        }
+        if (used) {
+            out[used++] = '/';
+        }
+        memcpy(out + used, parts[si], n);
+        used += n;
+        out[used] = 0;
+    }
+    return 0;
+}
+
+/* Root is always visible. A relative directory is a real folder, or a prefix
+   of a mounted path (the page has no process directory). */
+static int dir_visible(ef_vm *vm, const char *rel) {
+    ef_mounted *m;
+    size_t n;
+    if (!rel || !rel[0]) {
+        return 1;
+    }
+#ifndef __EMSCRIPTEN__
+    {
+        DIR *d = opendir(rel);
+        if (d) {
+            closedir(d);
+            return 1;
+        }
+    }
+#endif
+    n = strlen(rel);
+    for (m = vm->mounted; m; m = m->next) {
+        if (strncmp(m->path, rel, n) == 0 && m->path[n] == '/') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void emit_dir_label(ef_vm *vm, const char *dir) {
+    char cwd[512];
+    if (dir && dir[0]) {
+        emit_str(vm, dir);
+        return;
+    }
+#ifndef __EMSCRIPTEN__
+    if (getcwd(cwd, sizeof cwd)) {
+        emit_str(vm, cwd);
+        return;
+    }
+#else
+    (void)cwd;
+#endif
+    emit_str(vm, ".");
+}
+
+static void emit_cwd_line(ef_vm *vm) {
+    emit_str(vm, "Current directory: ");
+    emit_dir_label(vm, vm->logical_cwd);
+    emit_ch(vm, '\n');
+}
+
+static void emit_pad(ef_vm *vm, const char *s, int width) {
+    int n = (int)strlen(s);
+    int i;
+    emit_str(vm, s);
+    for (i = n; i < width; i++) {
+        emit_ch(vm, ' ');
+    }
+}
+
+typedef struct {
+    char name[160];
+    int is_dir;
+    long size;
+} ef_dent;
+
+static int dent_cmp(const void *a, const void *b) {
+    return strcasecmp(((const ef_dent *)a)->name, ((const ef_dent *)b)->name);
+}
+
+static void dent_add(ef_dent *ents, int *n, int cap, const char *name, int is_dir, long size) {
+    int i;
+    size_t len;
+    if (!name || !name[0] || strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+        return;
+    }
+    len = strlen(name);
+    if (len >= sizeof ents[0].name) {
+        return;
+    }
+    for (i = 0; i < *n; i++) {
+        if (strcasecmp(ents[i].name, name) == 0) {
+            if (is_dir) {
+                ents[i].is_dir = 1;
+            } else if (!ents[i].is_dir) {
+                ents[i].size = size;
+            }
+            return;
+        }
+    }
+    if (*n >= cap) {
+        return;
+    }
+    memcpy(ents[*n].name, name, len + 1);
+    ents[*n].is_dir = is_dir;
+    ents[*n].size = size;
+    (*n)++;
+}
+
+static int wild_eq(const char *pat, const char *s) {
+    while (*pat && *s) {
+        if (*pat == '*') {
+            while (*pat == '*') {
+                pat++;
+            }
+            if (!*pat) {
+                return 1;
+            }
+            for (; *s; s++) {
+                if (wild_eq(pat, s)) {
+                    return 1;
+                }
+            }
+            return 0;
+        }
+        if (*pat != '?' && tolower((unsigned char)*pat) != tolower((unsigned char)*s)) {
+            return 0;
+        }
+        pat++;
+        s++;
+    }
+    while (*pat == '*') {
+        pat++;
+    }
+    return *pat == 0 && *s == 0;
+}
+
+static void list_mounts(ef_vm *vm, const char *dir, ef_dent *ents, int *n, int cap) {
+    ef_mounted *m;
+    size_t dlen = dir ? strlen(dir) : 0;
+    for (m = vm->mounted; m; m = m->next) {
+        const char *rest = m->path;
+        const char *slash;
+        char name[160];
+        size_t ln;
+        if (dlen) {
+            if (strncmp(m->path, dir, dlen) != 0 || m->path[dlen] != '/') {
+                continue;
+            }
+            rest = m->path + dlen + 1;
+        }
+        if (!rest[0]) {
+            continue;
+        }
+        slash = strchr(rest, '/');
+        if (slash) {
+            ln = (size_t)(slash - rest);
+            if (ln == 0 || ln >= sizeof name) {
+                continue;
+            }
+            memcpy(name, rest, ln);
+            name[ln] = 0;
+            dent_add(ents, n, cap, name, 1, 0);
+        } else {
+            dent_add(ents, n, cap, rest, 0, (long)strlen(m->text ? m->text : ""));
+        }
+    }
+}
+
+#ifndef __EMSCRIPTEN__
+static void list_disk(const char *dir, ef_dent *ents, int *n, int cap) {
+    DIR *d = opendir(dir && dir[0] ? dir : ".");
+    struct dirent *de;
+    if (!d) {
+        return;
+    }
+    while ((de = readdir(d)) != NULL) {
+        char path[800];
+        struct stat st;
+        int is_dir = 0;
+        long size = 0;
+        if (dir && dir[0]) {
+            snprintf(path, sizeof path, "%s/%s", dir, de->d_name);
+        } else {
+            snprintf(path, sizeof path, "%s", de->d_name);
+        }
+        if (stat(path, &st) == 0) {
+            is_dir = S_ISDIR(st.st_mode) ? 1 : 0;
+            size = (long)st.st_size;
+        }
+        dent_add(ents, n, cap, de->d_name, is_dir, size);
+    }
+    closedir(d);
+}
+#endif
+
+static int list_at(ef_vm *vm, const char *base, const char *spec) {
+    char dir[512];
+    char filter[256];
+    char rel[512];
+    ef_dent *ents;
+    int n = 0;
+    int i;
+    int shown = 0;
+    const int cap = 512;
+    const char *slash;
+    filter[0] = 0;
+    dir[0] = 0;
+    if (spec_abs(spec)) {
+        emit_str(vm, "DIR error: bad path\n");
+        return EF_OK;
+    }
+    if (spec && spec[0] && (strchr(spec, '*') || strchr(spec, '?'))) {
+        slash = strrchr(spec, '/');
+        if (slash) {
+            char head[512];
+            size_t hn = (size_t)(slash - spec);
+            if (hn >= sizeof head) {
+                emit_str(vm, "DIR error: bad path\n");
+                return EF_OK;
+            }
+            memcpy(head, spec, hn);
+            head[hn] = 0;
+            snprintf(filter, sizeof filter, "%s", slash + 1);
+            if (head[0]) {
+                if (join_rel(base, head, rel, sizeof rel) || (rel[0] && !path_ok(rel))) {
+                    emit_str(vm, "DIR error: bad path\n");
+                    return EF_OK;
+                }
+                snprintf(dir, sizeof dir, "%s", rel);
+            } else {
+                snprintf(dir, sizeof dir, "%s", base ? base : "");
+            }
+        } else {
+            snprintf(filter, sizeof filter, "%s", spec);
+            snprintf(dir, sizeof dir, "%s", base ? base : "");
+        }
+    } else if (spec && spec[0]) {
+        if (join_rel(base, spec, rel, sizeof rel) || (rel[0] && !path_ok(rel))) {
+            emit_str(vm, "DIR error: bad path\n");
+            return EF_OK;
+        }
+        if (dir_visible(vm, rel)) {
+            snprintf(dir, sizeof dir, "%s", rel);
+        } else {
+            snprintf(filter, sizeof filter, "%s", spec);
+            snprintf(dir, sizeof dir, "%s", base ? base : "");
+        }
+    } else {
+        snprintf(dir, sizeof dir, "%s", base ? base : "");
+    }
+    if (!dir_visible(vm, dir)) {
+        emit_str(vm, "DIR error: Cannot read directory '");
+        emit_dir_label(vm, dir);
+        emit_str(vm, "'\n");
+        return EF_OK;
+    }
+    ents = calloc((size_t)cap, sizeof *ents);
+    if (!ents) {
+        emit_str(vm, "DIR error: out of memory\n");
+        return EF_OK;
+    }
+#ifndef __EMSCRIPTEN__
+    list_disk(dir, ents, &n, cap);
+#endif
+    list_mounts(vm, dir, ents, &n, cap);
+    qsort(ents, (size_t)n, sizeof *ents, dent_cmp);
+    emit_ch(vm, '\n');
+    emit_str(vm, "Directory of ");
+    emit_dir_label(vm, dir);
+    emit_str(vm, "\n\n");
+    for (i = 0; i < n; i++) {
+        char num[32];
+        if (filter[0] && !wild_eq(filter, ents[i].name)) {
+            continue;
+        }
+        emit_ch(vm, ' ');
+        emit_pad(vm, ents[i].name, 30);
+        if (ents[i].is_dir) {
+            emit_str(vm, " <DIR>\n");
+        } else {
+            snprintf(num, sizeof num, "%ld", ents[i].size);
+            emit_ch(vm, ' ');
+            emit_pad(vm, num, 12);
+            emit_ch(vm, '\n');
+        }
+        shown++;
+    }
+    free(ents);
+    emit_str(vm, "\n ");
+    emit_int(vm, shown, 10, 1);
+    emit_str(vm, "file(s)\n\n");
+    return EF_OK;
+}
+
+/* Form feed. The page and a terminal treat it as clear-the-console. */
+static int p_cls(ef_vm *vm) {
+    emit_ch(vm, '\f');
+    return EF_OK;
+}
+
+static int p_chdir(ef_vm *vm) {
+    char spec[512];
+    char base[512];
+    char dest[512];
+    int got;
+    int fromlib = vm->dbg_fromlib;
+    vm->dbg_fromlib = 0;
+    got = take_spec(vm, spec, (int)sizeof spec);
+    if (got < 0) {
+        return EF_THROW;
+    }
+    slashes(spec);
+    if (fromlib) {
+        snprintf(base, sizeof base, "Resources/Library");
+    } else {
+        snprintf(base, sizeof base, "%s", vm->logical_cwd);
+    }
+    if (!got || !spec[0]) {
+        if (fromlib) {
+            if (!dir_visible(vm, base)) {
+                emit_str(vm, "CHDIR error: Cannot open directory '");
+                emit_str(vm, base);
+                emit_str(vm, "'\n");
+                return EF_OK;
+            }
+            snprintf(vm->logical_cwd, sizeof vm->logical_cwd, "%s", base);
+        }
+        emit_cwd_line(vm);
+        return EF_OK;
+    }
+    if (spec_abs(spec) || join_rel(base, spec, dest, sizeof dest) ||
+        (dest[0] && !path_ok(dest))) {
+        emit_str(vm, "CHDIR error: bad path\n");
+        return EF_OK;
+    }
+    if (!dir_visible(vm, dest)) {
+        emit_str(vm, "CHDIR error: Cannot open directory '");
+        emit_str(vm, dest[0] ? dest : ".");
+        emit_str(vm, "'\n");
+        return EF_OK;
+    }
+    snprintf(vm->logical_cwd, sizeof vm->logical_cwd, "%s", dest);
+    emit_cwd_line(vm);
+    return EF_OK;
+}
+
+static int p_ls(ef_vm *vm) {
+    char spec[512];
+    char base[512];
+    int got;
+    int fromlib = vm->dbg_fromlib;
+    vm->dbg_fromlib = 0;
+    got = take_spec(vm, spec, (int)sizeof spec);
+    if (got < 0) {
+        return EF_THROW;
+    }
+    slashes(spec);
+    if (fromlib) {
+        snprintf(base, sizeof base, "Resources/Library");
+    } else {
+        snprintf(base, sizeof base, "%s", vm->logical_cwd);
+    }
+    return list_at(vm, base, got ? spec : "");
+}
+
 static int p_begin_cwd(ef_vm *vm) {
     char name[512];
     char parent[512];
@@ -3907,6 +5236,8 @@ static int p_begin_cwd(ef_vm *vm) {
     if (parent[0]) {
         if (old[0]) {
             snprintf(joined, sizeof joined, "%s/%s", old, parent);
+        } else if (vm->logical_cwd[0]) {
+            snprintf(joined, sizeof joined, "%s/%s", vm->logical_cwd, parent);
         } else {
             snprintf(joined, sizeof joined, "%s", parent);
         }
@@ -4125,6 +5456,7 @@ static const struct {
     { "U.", p_udot, 0 },
     { ".S", p_dot_s, 0 },
     { "KEY", p_key, 0 },
+    { "EKEY", p_ekey, 0 },
     { "BYE", p_bye, 0 },
     { "ABORT", p_abort, 0 },
     { "EXIT", p_exit, 0 },
@@ -4185,6 +5517,10 @@ static const struct {
     { "FORTH", p_forth, 0 },
     { "DEFINITIONS", p_definitions, 0 },
     { "INCLUDE", p_include, 0 },
+    { "CLS", p_cls, 0 },
+    { "CHDIR", p_chdir, 0 },
+    { "LS", p_ls, 0 },
+    { "DIR", p_ls, 0 },
     { "THROW", p_throw, 0 },
     { "LAST", p_last, 0 },
     { "PARSE", p_parse, 0 },
@@ -4221,8 +5557,33 @@ static const struct {
     { "R/O", p_ro, 0 },
     { "R/W", p_rw, 0 },
     { "BIN", p_bin, 0 },
-    { "DBG-ON", p_dbg, 0 },
-    { "DBG-OFF", p_dbg, 0 },
+    { "DBG-ON", p_dbg_on, 0 },
+    { "DBG-OFF", p_dbg_off, 0 },
+    { "DBG-BREAK-MIN!", p_dbg_break_min, 0 },
+    { "DBG-XT@", p_dbg_xt_at, 0 },
+    { "DBG-IP@", p_dbg_ip_at, 0 },
+    { "DBG-CFA@", p_dbg_cfa_at, 0 },
+    { "DBG-BODY#", p_dbg_body_n, 0 },
+    { "DBG-.SR", p_dbg_dot_sr, 0 },
+    { "DBG-PRINT-INLINE", p_dbg_print_inline, 0 },
+    { "DBG-PRINT-NAME", p_dbg_print_name, 0 },
+    { "DBG-XT-INTOABLE?", p_dbg_intoable, 0 },
+    { "DBG-HOST-PAINT", p_dbg_host_paint, 0 },
+    { "DBG-HOST-SPAN", p_dbg_host_span, 0 },
+    { "DBG-HOST-SPAN@", p_dbg_host_span_at, 0 },
+    { "DBG-VIEW-UPDATE", p_dbg_view_update, 0 },
+    { "DBG-STEP-OVER", p_dbg_step_over, 0 },
+    { "DBG-STEP-INTO", p_dbg_step_into, 0 },
+    { "DBG-STEP-OUT", p_dbg_step_out, 0 },
+    { "DBG-GO", p_dbg_go, 0 },
+    { "DBG-ABORT-SESSION", p_dbg_abort, 0 },
+    { "(BP-GO)", p_bp_go, 0 },
+    { "(RUNTO-IP)", p_runto_ip, 0 },
+    { "RUNTO-OFF@", p_runto_off_fetch, 0 },
+    { "RUNTO-STATUS!", p_runto_status, 0 },
+    { "FROMLIB", p_fromlib, 0 },
+    { "FROMLIB?", p_fromlib_q, 0 },
+    { "FROMLIB-OFF", p_fromlib_off, 0 },
     { "(LOAD-ENTER)", p_load_enter, 0 },
     { "RESOLVE-KEY", p_resolve_key, 0 },
     { "BOOT-WORD-TABLE", p_boot0, 0 },
@@ -4237,6 +5598,9 @@ static const struct {
     { "DABS", p_d_abs, 0 },
     { "D0<", p_d_zero_lt, 0 },
     { "2@", p_two_fetch, 0 },
+    { "2!", p_two_store, 0 },
+    { "SAVE-INPUT", p_save_input, 0 },
+    { "RESTORE-INPUT", p_restore_input, 0 },
     { "2>R", p_two_to_r, 0 },
     { "2R>", p_two_r_from, 0 },
     { "2R@", p_two_r_fetch, 0 },
@@ -4245,6 +5609,7 @@ static const struct {
     { "PARSE-NAME", p_parse_name, 0 },
     { "PARSE-FILESPEC", p_parse_filespec, 0 },
     { "ALSO", p_also, 0 },
+    { "PREVIOUS", p_previous, 0 },
     { "TO", p_to, 1 },
     { "CATCH", p_catch, 0 },
     { "FORGET", p_forget, 0 },
@@ -4302,6 +5667,9 @@ static void note_special(ef_vm *vm, const char *name, int32_t cfa) {
     else if (strcmp(name, "LOCAL-INIT") == 0) vm->xt_linit = cfa;
     else if (strcmp(name, "(LOCAL@)") == 0) vm->xt_lat = cfa;
     else if (strcmp(name, "(LOCAL!)") == 0) vm->xt_lstore = cfa;
+    else if (strcmp(name, "DBG-OFF") == 0) vm->xt_dbg_off = cfa;
+    else if (strcmp(name, "EXECUTE") == 0) vm->xt_execute = cfa;
+    else if (strcmp(name, "CATCH") == 0) vm->xt_catch = cfa;
 }
 
 static void register_all(ef_vm *vm) {
@@ -4336,6 +5704,15 @@ static void default_emit(void *ctx, int ch) {
 
 #include "boot.inc"
 
+static int open_embedded_boot(char **owned, int *len) {
+    int n = (int)strlen(boot_fth);
+    if (copy_owned(boot_fth, n, owned)) {
+        return -1;
+    }
+    *len = n;
+    return 0;
+}
+
 ef_vm *ef_create(void) {
     ef_vm *vm = calloc(1, sizeof *vm);
     if (!vm) {
@@ -4358,6 +5735,8 @@ ef_vm *ef_create(void) {
     uv_set(vm, UV_ORDER, FORTH_WID);
     uv_set(vm, UV_BLOCK_NR, -1);
     vm->heap_at = HEAP_ORIGIN;
+    vm->dbg_over = -1;
+    vm->dbg_out = -1;
     register_all(vm);
     if (vm->throw_code) {
         ef_destroy(vm);

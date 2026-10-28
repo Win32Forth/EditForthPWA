@@ -162,7 +162,8 @@ DEFER DBG-ED-HL-HIST-CLR   \ ( -- )
 
 : DBG-ED-FIND  ( c-addr u -- xt true | false )
   \ FIND: xt 1|-1 | c-addr 0. DUP IF leaves ( xt flag ); DROP the flag — not NIP.
-  DBG-CMD DBG-PLACE
+  \ This engine's S" keeps one leading blank; a real token does not.
+  (S-BL) DBG-CMD DBG-PLACE
   DBG-CMD FIND DUP IF  DROP TRUE  ELSE  2DROP FALSE  THEN ;
 
 \ ( defer-xt c-addr u -- flag )  bind defer to found xt; drop defer on miss
@@ -210,20 +211,20 @@ VARIABLE DBG-ED-MAP-XT
   ['] DBG-ED-SKIP-COMMENT  S" SZ-SKIP-COMMENT"   DBG-ED-SET-DEFER DROP
   ['] DBG-ED-WORD-HIT?     S" SZ-WORD-HIT?"      DBG-ED-SET-DEFER DROP
   ['] DBG-ED-HL-HIST-CLR   S" SZ-HL-HIST-CLEAR"  DBG-ED-SET-DEFER DROP
+  \ DBG-ED-FIND miss is one flag, and IF consumes it.
   S" SZ-HIGHLIGHT-SPAN" DBG-ED-FIND IF
      ['] DBG-ED-HL-SPAN DEFER!
   ELSE
-     DROP
      \ 64Edit path: publish off+len through host_debug_set_span.
      ['] DBG-ED-HL-SPAN-HOST ['] DBG-ED-HL-SPAN DEFER!
   THEN
   S" SZ-HIGHLIGHT-NAME" DBG-ED-FIND IF
      DUP DBG-ED-NAME-XT !
      ['] DBG-ED-HL-NAME DEFER!
-  ELSE  DROP  THEN
+  THEN
 
   ONLY FORTH ALSO DEBUGGER
-  S" DBG-MAP-HL" DBG-ED-FIND IF  DBG-ED-MAP-XT !  ELSE  DROP  THEN
+  S" DBG-MAP-HL" DBG-ED-FIND IF  DBG-ED-MAP-XT !  THEN
 
   DBG-ED-MAP-XT @ IF
      DBG-ED-MAP-XT @ ['] DBG-HL-RUN DEFER!

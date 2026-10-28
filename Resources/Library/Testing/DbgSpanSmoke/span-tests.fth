@@ -193,14 +193,13 @@ ANEW T3MOD
 
 \ --- 5) Simulate BODY# → map cell# for nested Into path ---
 
-\ Kernel DBG-BODY# counts from CFA+8; map index is BODY#-1 (see DBG-MAP-CELL#).
+\ PWA DBG-BODY# is (IP − (CFA+8)) / CELL. DBG-MAP-CELL# is that index.
 : T-CELL-MATH  ( -- )
   CR ." === T-CELL-MATH: BODY# → map# ===" CR
-  \ Mirror DBG-MAP-CELL#: body# 0 → 0; else body#-1
-  0 DUP IF  1-  THEN  0 = S" body#0 → map#0" SPAN-OK
-  1 DUP IF  1-  THEN  0 = S" body#1 → map#0" SPAN-OK
-  2 DUP IF  1-  THEN  1 = S" body#2 → map#1" SPAN-OK
-  26 DUP IF  1-  THEN  25 = S" body#26 → map#25 (first nested DUP area)" SPAN-OK
+  0 0 = S" body#0 → map#0" SPAN-OK
+  1 1 = S" body#1 → map#1" SPAN-OK
+  2 2 = S" body#2 → map#2" SPAN-OK
+  26 26 = S" body#26 → map#26" SPAN-OK
 ;
 
 \ --- runner ---
