@@ -1,9 +1,10 @@
 EditForthPWA library
 ---------------------
-This tree came from EditForth. Library/TCOM is not included. The ARM64
-kernel (forth.s and the boot-word includes) is not included. Boot embeds
-the Forth files in the project's forth/ directory. This folder is not
-loaded at boot. The project README describes what currently runs.
+This tree came from EditForth. Library/TCOM, Library/Reference,
+Library/BigInteger, Library/PI, and Library/Emitter are not included.
+The ARM64 kernel (forth.s and the boot-word includes) is not included.
+Boot embeds the Forth files in the project's forth/ directory. This
+folder is not loaded at boot. The project README describes what currently runs.
 
 64Forth Library — sources under 64Forth/Resources/Library/
 
@@ -19,15 +20,11 @@ Examples
   FROMLIB FLOAD Testing/HayesTest/HayesTest.fth
   FROMLIB FLOAD Testing/ANSValidate/ANS-VALIDATE.fth
   FROMLIB FLOAD Testing/DbgSpanSmoke/span-tests.fth
-  FROMLIB FLOAD BigInteger/big-int.fth
-  FROMLIB FLOAD PI/pi-test.fth
   FROMLIB FLOAD xchar-smoke.fth
   FROMLIB FLOAD Debugger/debugger.fth  \ DEBUG hub + loads Debugger/* (AutoLoad)
   FROMLIB FLOAD Assembler/asmarm64.fth     \ AArch64 host toolkit (not used by TCOM)
   FROMLIB FLOAD Assembler/ASSEMBLER.fth    \ interactive CODE / END-CODE (64Forth only)
   FROMLIB FLOAD Assembler/ASMARMTESTS.fth \ then: ASM-TESTS
-  FROMLIB FLOAD Emitter/emitter.fth        \ turnkey slicer (IN PROGRESS)
-  \ Stand-alone app kit base = GRAPHICS (see Docs/APPKIT.md); first emit target: tetra
   FROMLIB FLOAD Pascal/PASCAL.fth          \ Tiny Pascal → Forth translator
   FROMLIB S" Pascal/PASY.PAS" PASCAL-TO-FILE   \ then INCLUDED + DEMO
   FROMLIB FLOAD Sample/DOODLE64.fth        \ then: DOODLE (1-bit mouse demo)
@@ -51,16 +48,6 @@ Assembler (ASMARM64)
   Monitor: Docs/STATUSASM64.md (twin of 64TCOM/STATUSASM64.md)
   After load: .ASMARM64  ASM-TESTS  ASMARM64-DISCARD
   CODE words:  FROMLIB FLOAD Assembler/ASSEMBLER.fth  then  CODE name … END-CODE
-
-Emitter (IN PROGRESS)
----------------------
-  Experimental space-optimizing / turnkey slicer toward stand-alone apps.
-  Load:   FROMLIB FLOAD Emitter/emitter.fth
-  Pieces: reach.fth (reachable xts), target.fth (target image),
-          reloc.fth (PC-rel retarget / veneers), run.fth (trampoline + CALL-NATIVE)
-  Kernel CODE words carry _END labels so primitive sizes can be measured for copy.
-  Not finished — do not treat as a shipping compiler yet.
-  Status: Docs/STATUS.md § v1.3.4
 
 Pascal (Tiny Pascal → Forth)
 ----------------------------

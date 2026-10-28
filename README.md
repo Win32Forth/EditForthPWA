@@ -71,13 +71,13 @@ Nothing under `Resources/` is loaded at boot.
 | `host/web_main.c` | Exports the engine to the page. |
 | `forth/` | Cold sources embedded into the image. |
 | `web/` | The editor page, service worker, and icons. |
-| `Resources/` | Library, samples, debugger, hyper text, and Emitter sources. |
+| `Resources/` | Library, samples, debugger, and hyper text. |
 | `test/smoke.fth` | Terminal smoke test. |
 | `scripts/embed.py` | Packs `forth/` into `build/boot.inc`. |
 
-`Resources/Library/Sources/` keeps the library copies of the cold `.fth` files. Boot does not read them. Where a file in `forth/` differs, that copy is the one the image runs. `forth.s`, the ARM boot-word includes, `kernel_api.h`, and `Library/TCOM` are not in this tree. This port does not assemble ARM64, and it does not run the old TCOM sources.
+`Resources/Library/Sources/` keeps the library copies of the cold `.fth` files. Boot does not read them. Where a file in `forth/` differs, that copy is the one the image runs. `forth.s`, the ARM boot-word includes, `kernel_api.h`, and `Library/TCOM` are not in this tree. This port does not assemble ARM64, and it does not run the old TCOM sources. `Library/Reference`, `Library/BigInteger`, `Library/PI`, and `Library/Emitter` are not included.
 
-The Emitter stays unloaded. It emits native ARM64 apps. `Library/Debugger` and `Library/Hyper` are present and not loaded yet. The debugger is the next piece of work.
+`Library/Debugger` and `Library/Hyper` are present and not loaded yet. The debugger is the next piece of work.
 
 ## Engine
 
