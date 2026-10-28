@@ -1,5 +1,3 @@
 build/
-web/editforth.js
-web/editforth.wasm
 web/editforth.wasm.map
 .DS_Store

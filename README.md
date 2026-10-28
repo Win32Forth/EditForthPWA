@@ -14,7 +14,7 @@ make serve
 
 Open `http://127.0.0.1:8080/` in Chrome or Edge. The editor shows line numbers and one tab per open file. Startup leaves no file open. An error opens that file in view mode, selects the line, and marks its number. View mode is read-only, with a yellow bar and an Edit button. Typing in view mode asks whether to switch to Edit. Edit the current file, then press Include, or Cmd+Enter, or Ctrl+Enter. Include runs the text in the editor and does not write it. Save, or Cmd+S or Ctrl+S, writes the file. Closing a changed file asks Save, Don't Save, or Cancel. Switching tabs does not write the file. Restart boots a fresh image and clears the console. It does not include the open file. Shift with that shortcut, or the Restart button, does the fresh boot.
 
-Open Folder picks a directory. The tree lists that folder, and the choice is remembered for this site. If a tab has unsaved changes, Open Folder asks Save, Don't Save, or Cancel first. The folder's first file opens. An empty folder opens `Untitled.fth`. Until a folder is open, files stay in the browser's private storage and the first visit creates `work.fth`. New opens an `Untitled.fth` tab. Save of that tab asks for a file name. Closing the last tab leaves the editor blank and not editable. The page does not delete files. `INCLUDE` reads the files in the tree. A name with no directory is looked up next to the file that is loading.
+The menu to the left of the title is three lines. Open Folder is the first item. Show boot messages is the next item. It prints the `Loading:` and `Finished Loading:` lines from the latest boot. Those lines are kept off the console at startup and on Restart. Open Folder picks a directory. The tree lists that folder, and the choice is remembered for this site. If a tab has unsaved changes, Open Folder asks Save, Don't Save, or Cancel first. The folder's first file opens. An empty folder opens `Untitled.fth`. Until a folder is open, files stay in the browser's private storage and the first visit creates `work.fth`. New opens an `Untitled.fth` tab. Save of that tab asks for a file name. Closing the last tab leaves the editor blank and not editable. The page does not delete files. `INCLUDE` reads the files in the tree. A name with no directory is looked up next to the file that is loading.
 
 `CHDIR` prints `Current directory:`. `CHDIR documents` (also `desktop`, `downloads`, `music`, `pictures`, and `videos`) opens the folder picker when that name is not already a mounted directory. Cancel leaves the open folder as it is. `LS` and `DIR` list the current directory. `FROMLIB` makes the next `LS`, `DIR`, `CHDIR`, or `RESOLVE-KEY` start under `Resources/Library`.
 
@@ -30,13 +30,15 @@ make test
 
 `make test` checks division by zero, an undefined word, and `test/smoke.fth`. `make wasm-test` checks the same engine under Node, including `INCLUDE` of mounted files. `make` from another directory has no rules. Run it in this folder. After a Forth source changes, if `make` keeps an old image, delete `build/boot.inc` and build again.
 
+`web/editforth.js` and `web/editforth.wasm` are the engine the page loads. Both are in the repository. `make wasm` rebuilds them from `kernel/ef32.c`, `host/web_main.c`, and the cold files in `forth/`. When that build changes, commit the new pair with the sources. `web/editforth.wasm.map` is not committed. `make clean` deletes the pair. Run `make wasm` to put it back. `build/` stays out of the repository. The terminal binary `build/editforth` is not committed.
+
 The page cache is named in `web/sw.js`. After a rebuild, reload the page so the new script and wasm are fetched.
 
 ## Editor
 
 The window is white (`#ffffff`) with black text (`#111111`). Include is a black button. Errors are `#9b1c1c`.
 
-The bar between the source and the console drags. Dragging up gives the console more room. The height is remembered (`editforth.consoleHeight`). The console stays under the source. There is no undock.
+The bar between the source and the console drags. Dragging up gives the console more room. The height is remembered (`editforth.consoleHeight`). The console stays under the source. There is no undock. The bar on the right of the file list drags sideways. The list starts at 220px, and the width is remembered (`editforth.treeWidth`). Save sits with New and Close.
 
 The console starts with `=== EditForthPWA 2.5.6 === Oct 26, 2026 3:26 PM ===`. `CLS` clears back to that line and the prompt. The Forth command line is the tail of the console text, on the line under the last output. The prompt is `ok(n)> `, with a trailing space. `n` is how many values are on the data stack. Return runs that tail. The output follows, and a new prompt is drawn in the same text. Up and Down recall earlier lines into that tail. An unknown name prints `undefined: NAME`, then `file:line`, then `throw -13`, in red, and the editor selects that line.
 
@@ -58,7 +60,7 @@ Boot embeds the files in `forth/`, in this order:
 10. `xref.fth`
 11. `ef-hooks.fth`
 
-The last line of a normal boot is `Finished Loading: ef-hooks.fth`.
+The engine's last boot line is `Finished Loading: ef-hooks.fth`. The page holds that line, and the other `Loading:` lines, until Show boot messages.
 
 `kernel1.fth` and `kernel2.fth` are the 32-bit cold blobs. `vocemit.fth` builds `EMITTER`. `app-output.fth` builds `GRAPHICS`. `app-points.fth` adds `PLOT`, `LINE`, `1BIT`, `COLOR8`, and `TRUECOLOR`. `vocsys.fth` creates `SYSVOC` and moves host names into `GRAPHICS` or `SYSVOC`. `xref.fth` adds `REF`, `XREF`, `USEDIN`, `CALLS`, and `ANYWORDS`. The three `ef-*.fth` files supply host words those blobs call. `L@` and `L!` are 32-bit little-endian. `-ROT` is in `ef-hooks.fth`. Word names such as `(TZ-EOL)`, `(TZ-THREAD)`, `(TZ-UNLINK)`, and `(TZ-LINK)` keep that spelling.
 
@@ -72,14 +74,14 @@ Nothing under `Resources/` is loaded at boot.
 | `host/main.c` | Terminal. `BYE` quits. |
 | `host/web_main.c` | Exports the engine to the page. |
 | `forth/` | Cold sources embedded into the image. |
-| `web/` | The editor page, service worker, and icons. |
+| `web/` | The editor page, service worker, icons, and the committed `editforth.js` / `editforth.wasm` build. |
 | `Resources/` | Library, samples, debugger, and hyper text. |
 | `test/smoke.fth` | Terminal smoke test. |
 | `scripts/embed.py` | Packs `forth/` into `build/boot.inc`. |
 
 `Resources/Library/Sources/` keeps the library copies of the cold `.fth` files. Boot does not read them. Where a file in `forth/` differs, that copy is the one the image runs. `forth.s`, the ARM boot-word includes, `kernel_api.h`, and `Library/TCOM` are not in this tree. This port does not assemble ARM64, and it does not run the old TCOM sources. `Library/Reference`, `Library/BigInteger`, `Library/PI`, and `Library/Emitter` are not included.
 
-`DEBUG name` steps that word in the console. F6, Space, `o`, or Return steps over. F7 or `i` steps into. F8 steps out. `g` runs to the end. Esc or `q` aborts. `h` prints the key list again. That built-in pause is in the engine. `FROMLIB S" Debugger/debugger.fth" INCLUDED` loads the Forth pause UI from `Library/Debugger`. The page fetches those Debugger files from `web/Resources` (a link to `Resources/`) and mounts them, so the line works before Open Folder. A file of the same path in the open folder is the one that loads. `Library/Hyper` is present and is not loaded. The editor does not highlight the stepped word, and there is no debug status strip yet.
+`DEBUG name` steps that word in the console. F6, Space, `o`, or Return steps over. F7 or `i` steps into. F8 steps out. `g` runs to the end. Esc or `q` aborts. `h` prints the key list again. That built-in pause is in the engine. Each pause washes the current token in green and opens that file in view mode. A cold word such as `2OVER` opens the embedded `boot` image in a view-mode tab. That image is not listed in the file tree. The wash uses the debugger's file span. When there is no span, it finds the word near the definition. The wash clears when the session ends. `FROMLIB S" Debugger/debugger.fth" INCLUDED` loads the Forth pause UI from `Library/Debugger`. The page fetches those Debugger files from `web/Resources` (a link to `Resources/`) and mounts them, so the line works before Open Folder. A file of the same path in the open folder is the one that loads. `Library/Hyper` is present and is not loaded. There is no debug status strip yet.
 
 ## Engine
 

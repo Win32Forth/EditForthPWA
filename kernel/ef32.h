@@ -31,12 +31,16 @@ typedef struct ef_vm ef_vm;
 typedef void (*ef_emit_fn)(void *ctx, int ch);
 /* Next key event, or -1 if none. KEY keeps the low 8 bits. EKEY keeps the cell. */
 typedef int (*ef_key_fn)(void *ctx);
+/* Debug pause location. An empty path clears the editor wash.
+   off/len are file-relative UTF-8 bytes; len 0 means search by name. */
+typedef void (*ef_debug_fn)(void *ctx, const char *path, int line, const char *name, int off, int len);
 
 ef_vm *ef_create(void);
 void ef_destroy(ef_vm *vm);
 
 void ef_set_emit(ef_vm *vm, ef_emit_fn fn, void *ctx);
 void ef_set_key(ef_vm *vm, ef_key_fn fn, void *ctx);
+void ef_set_debug(ef_vm *vm, ef_debug_fn fn, void *ctx);
 
 /* Interpret text. Newlines are whitespace. '\' comments end at newline.
    Returns 0, or a THROW code. After a THROW the VM is usable again:
@@ -48,6 +52,8 @@ int ef_eval(ef_vm *vm, const char *text);
    forth/app-output.fth, forth/ef-long.fth, forth/app-points.fth,
    forth/vocsys.fth, forth/xref.fth, then forth/ef-hooks.fth. */
 int ef_boot(ef_vm *vm);
+/* The concatenated cold image stamped as view file "boot". */
+const char *ef_boot_source(void);
 
 /* Page file tree. INCLUDE looks here before the real disk.
    A path is slash-separated, with no "." or ".." segment. */

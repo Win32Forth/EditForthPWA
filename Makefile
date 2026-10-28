@@ -9,7 +9,7 @@ EMCC    ?= emcc
 # gnu11: EM_ASM in host/web_main.c is rejected under -std=c11.
 EMFLAGS  = -O2 -std=gnu11 -Wall -Wextra $(CPPFLAGS)
 EMFLAGS += -s WASM=1 -s MODULARIZE=1 -s EXPORT_ES6=1 -s EXPORT_NAME=createEditForth
-EMFLAGS += -s EXPORTED_FUNCTIONS='["_ef_web_boot","_ef_web_eval","_ef_web_mount_clear","_ef_web_mount","_ef_web_set_source","_ef_web_output","_ef_web_depth","_ef_web_item","_ef_web_state","_ef_web_bye","_ef_web_error_line","_ef_web_error_name","_ef_web_post_key","_ef_web_key_waiting","_malloc","_free"]'
+EMFLAGS += -s EXPORTED_FUNCTIONS='["_ef_web_boot","_ef_web_eval","_ef_web_mount_clear","_ef_web_mount","_ef_web_set_source","_ef_web_output","_ef_web_depth","_ef_web_item","_ef_web_state","_ef_web_bye","_ef_web_error_line","_ef_web_error_name","_ef_web_boot_source","_ef_web_post_key","_ef_web_key_waiting","_malloc","_free"]'
 EMFLAGS += -s EXPORTED_RUNTIME_METHODS='["cwrap","UTF8ToString"]'
 EMFLAGS += -s ENVIRONMENT=web,node -s ALLOW_MEMORY_GROWTH=1 -s EXIT_RUNTIME=0
 EMFLAGS += -s ASYNCIFY=1 -s ASYNCIFY_STACK_SIZE=65536

@@ -1,8 +1,10 @@
-import createEditForth from "./editforth.js?v=31";
+import createEditForth from "./editforth.js?v=38";
 
 const log = document.querySelector("#log");
 const installBtn = document.querySelector("#install");
 const editor = document.querySelector("#editor");
+const editorPane = document.querySelector("#editor-pane");
+const hl = document.querySelector("#hl");
 const tabsEl = document.querySelector("#tabs");
 const banner = document.querySelector("#banner");
 const saveBtn = document.querySelector("#save");
@@ -132,6 +134,33 @@ function resetConsole() {
   chunks.length = 0;
   chunks.push({ text: BANNER, cls: "" });
   render("", false);
+}
+
+let bootLog = "";
+
+function peelBoot(text) {
+  const parts = text.split("\n");
+  const show = [];
+  const boot = [];
+  const endsNL = text.endsWith("\n");
+  for (let i = 0; i < parts.length; i++) {
+    const line = parts[i];
+    const incomplete = i === parts.length - 1 && !endsNL;
+    if (!incomplete && /^ (?:Loading|Finished Loading): \S+$/.test(line)) {
+      boot.push(line);
+    } else {
+      show.push(line);
+    }
+  }
+  bootLog = boot.length ? boot.join("\n") + "\n" : "";
+  return show.join("\n");
+}
+
+function writeBoot(text, cls) {
+  const shown = peelBoot(text);
+  if (shown) {
+    write(shown, cls);
+  }
 }
 
 function write(text, cls) {
@@ -436,10 +465,16 @@ function bufferOf(tab) {
   if (tab.id === currentId) {
     return editor.value;
   }
-  if (tab.path) {
-    return files.get(tab.path) ?? "";
+  if (tab.path && files.has(tab.path)) {
+    return files.get(tab.path);
   }
-  return tab.text ?? "";
+  if (tab.text) {
+    return tab.text;
+  }
+  if (tab.path && shipped.has(tab.path)) {
+    return shipped.get(tab.path);
+  }
+  return "";
 }
 
 function rememberEditor() {
@@ -447,7 +482,7 @@ function rememberEditor() {
   if (!tab) {
     return;
   }
-  if (tab.path) {
+  if (tab.path && files.has(tab.path)) {
     files.set(tab.path, editor.value);
   } else {
     tab.text = editor.value;
@@ -487,7 +522,7 @@ async function saveTab(tab) {
 
 function saveAs(tab) {
   nameForm.hidden = false;
-  nameInput.value = tab.title || "Untitled.fth";
+  nameInput.value = tab.path === "boot" ? "boot.fth" : (tab.title || "Untitled.fth");
   nameInput.focus();
   nameInput.select();
   return new Promise((resolve) => {
@@ -501,6 +536,12 @@ async function finishSaveAs(path) {
     return;
   }
   const tab = pending.tab;
+  if (path === "boot") {
+    where.textContent = "boot is the cold image";
+    where.className = "err";
+    nameForm.hidden = false;
+    return;
+  }
   if (!validPath(path)) {
     where.textContent = "Use a name like work.fth or lib/work.fth";
     where.className = "err";
@@ -553,7 +594,7 @@ async function saveDirty(tab) {
   if (!tab) {
     return false;
   }
-  if (!tab.path) {
+  if (!tab.path || !files.has(tab.path)) {
     return saveAs(tab);
   }
   return saveTab(tab);
@@ -616,7 +657,14 @@ function showTab(tab, opts) {
   }
   currentId = tab.id;
   currentPath = tab.path;
-  editor.value = tab.path ? (files.get(tab.path) ?? "") : (tab.text ?? "");
+  clearHighlight();
+  if (!tab.path) {
+    editor.value = tab.text ?? "";
+  } else if (files.has(tab.path)) {
+    editor.value = files.get(tab.path);
+  } else {
+    editor.value = tab.text || shipped.get(tab.path) || "";
+  }
   editor.readOnly = tab.view;
   banner.hidden = !tab.view;
   where.textContent = tab.path || tab.title;
@@ -631,6 +679,7 @@ function showTab(tab, opts) {
 function showNone() {
   currentId = 0;
   currentPath = "";
+  clearHighlight();
   editor.value = "";
   editor.readOnly = true;
   banner.hidden = true;
@@ -682,7 +731,7 @@ async function closeTab(id) {
       if (!(await saveDirty(tab))) {
         return;
       }
-    } else if (tab.path) {
+    } else if (tab.path && files.has(tab.path)) {
       files.set(tab.path, tab.saved);
     }
   }
@@ -732,6 +781,242 @@ function paintLines() {
 
 function syncGutter() {
   gutterInner.style.transform = "translateY(" + (-editor.scrollTop) + "px)";
+  if (editorPane.classList.contains("debugging")) {
+    hl.scrollTop = editor.scrollTop;
+    hl.scrollLeft = editor.scrollLeft;
+  }
+}
+
+function clearHighlight() {
+  hl.replaceChildren();
+  editorPane.classList.remove("debugging");
+}
+
+function isForthSpace(ch) {
+  return ch === " " || ch === "\t" || ch === "\n" || ch === "\r";
+}
+
+function firstWholeWord(text, needle, from, to, ignoreCase) {
+  const hay = ignoreCase ? text.toLowerCase() : text;
+  const want = ignoreCase ? needle.toLowerCase() : needle;
+  let at = from;
+  while (at < to) {
+    const hit = hay.indexOf(want, at);
+    if (hit < 0 || hit >= to) {
+      return -1;
+    }
+    const end = hit + want.length;
+    const before = hit === 0 || isForthSpace(text[hit - 1]);
+    const after = end >= text.length || isForthSpace(text[end]);
+    if (end <= to && before && after) {
+      return hit;
+    }
+    at = hit + 1;
+  }
+  return -1;
+}
+
+function lineStart(text, line) {
+  if (line <= 1) {
+    return 0;
+  }
+  let n = 1;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) {
+      n++;
+      if (n === line) {
+        return i + 1;
+      }
+    }
+  }
+  return text.length;
+}
+
+function definitionEnd(text, from) {
+  const semi = firstWholeWord(text, ";", from, text.length, false);
+  if (semi >= 0) {
+    return semi + 1;
+  }
+  let i = from;
+  while (i < text.length && text[i] !== "\n") {
+    i++;
+  }
+  if (i < text.length) {
+    i++;
+  }
+  while (i < text.length) {
+    let j = i;
+    while (text[j] === " " || text[j] === "\t") {
+      j++;
+    }
+    if (text[j] === ":" && (j + 1 >= text.length || isForthSpace(text[j + 1]))) {
+      return i;
+    }
+    while (i < text.length && text[i] !== "\n") {
+      i++;
+    }
+    if (i < text.length) {
+      i++;
+    }
+  }
+  return text.length;
+}
+
+function highlightNeedles(name) {
+  const key = name.toUpperCase();
+  if (key === "EXIT") {
+    return [[";", false], ["EXIT", true]];
+  }
+  if (key === '(S")') {
+    return [['S"', false], ['."', false]];
+  }
+  if (key === '(.")') {
+    return [['."', false], ['S"', false]];
+  }
+  if (key === '(C")') {
+    return [['C"', false]];
+  }
+  if (key === "0BRANCH") {
+    return [["IF", true], ["WHILE", true], ["UNTIL", true]];
+  }
+  if (key === "BRANCH") {
+    return [["ELSE", true], ["AGAIN", true], ["REPEAT", true]];
+  }
+  if (key === "(DO)") {
+    return [["DO", true]];
+  }
+  if (key === "(?DO)") {
+    return [["?DO", false]];
+  }
+  if (key === "(LOOP)") {
+    return [["LOOP", true]];
+  }
+  if (key === "(+LOOP)") {
+    return [["+LOOP", false]];
+  }
+  if (key === "LIT") {
+    return [["[']", false], ["[CHAR]", true], ["LIT", true]];
+  }
+  return [[name, true]];
+}
+
+function findWordRange(text, name, line, startAt) {
+  const from = lineStart(text, line || 1);
+  const to = definitionEnd(text, from);
+  const begin = startAt == null ? from : Math.max(from, startAt);
+  if (begin >= to) {
+    return null;
+  }
+  for (const [needle, ignoreCase] of highlightNeedles(name)) {
+    const hit = firstWholeWord(text, needle, begin, to, ignoreCase);
+    if (hit >= 0) {
+      return [hit, hit + needle.length];
+    }
+  }
+  return null;
+}
+
+function utf8Range(text, off, len) {
+  if (off < 0 || len <= 0) {
+    return null;
+  }
+  const bytes = new TextEncoder().encode(text);
+  if (off + len > bytes.length) {
+    return null;
+  }
+  const dec = new TextDecoder();
+  const start = dec.decode(bytes.subarray(0, off)).length;
+  const count = dec.decode(bytes.subarray(off, off + len)).length;
+  return [start, start + count];
+}
+
+function paintHighlight(text, start, end) {
+  hl.replaceChildren();
+  hl.append(document.createTextNode(text.slice(0, start)));
+  const mark = document.createElement("mark");
+  mark.textContent = text.slice(start, end);
+  hl.append(mark);
+  hl.append(document.createTextNode(text.slice(end)));
+  editorPane.classList.add("debugging");
+  hl.scrollTop = editor.scrollTop;
+  hl.scrollLeft = editor.scrollLeft;
+}
+
+function scrollIndex(index) {
+  const line = editor.value.slice(0, index).split("\n").length;
+  const cs = getComputedStyle(editor);
+  const lh = parseFloat(cs.lineHeight) || 21;
+  const pad = parseFloat(cs.paddingTop) || 0;
+  const y = pad + (line - 1) * lh;
+  if (y < editor.scrollTop || y + lh > editor.scrollTop + editor.clientHeight) {
+    editor.scrollTop = Math.max(0, y - editor.clientHeight / 3);
+  }
+  syncGutter();
+}
+
+let lastWash = null;
+
+function showDebug(path, line, name, off, len) {
+  if (!path) {
+    lastWash = null;
+    clearHighlight();
+    return;
+  }
+  const known = files.has(path) ? files.get(path) : (shipped.get(path) ?? null);
+  if (known == null) {
+    return;
+  }
+  let tab = tabs.find((item) => item.path === path);
+  if (!tab) {
+    if (files.has(path)) {
+      openFile(path, { view: true });
+    } else {
+      rememberEditor();
+      tab = {
+        id: nextTabId++,
+        path,
+        title: path.split("/").pop(),
+        saved: known,
+        view: true,
+        text: known,
+      };
+      tabs.push(tab);
+      showTab(tab, { view: true });
+    }
+  } else if (tab.id !== currentId) {
+    rememberEditor();
+    showTab(tab, { view: true });
+  } else if (!tab.view) {
+    tab.view = true;
+    editor.readOnly = true;
+    banner.hidden = false;
+  }
+  const text = editor.value;
+  let range = utf8Range(text, off, len);
+  if (!range && name) {
+    const after = lastWash && lastWash.path === path && lastWash.name === name ? lastWash.end : null;
+    range = findWordRange(text, name, line, after);
+  }
+  /* A repeated token with the same span, or a name search that starts over,
+     would wash the first copy again. Take the next copy in the definition. */
+  if (range && lastWash && lastWash.path === path && lastWash.name === name && range[0] === lastWash.start) {
+    const next = findWordRange(text, name, line, lastWash.end);
+    if (next) {
+      range = next;
+    }
+  }
+  if (!range) {
+    lastWash = null;
+    clearHighlight();
+    if (line > 0) {
+      scrollIndex(lineStart(text, line));
+    }
+    return;
+  }
+  lastWash = { path, name, start: range[0], end: range[1] };
+  paintHighlight(text, range[0], range[1]);
+  editor.setSelectionRange(range[0], range[0]);
+  scrollIndex(range[0]);
 }
 
 function markLine(line) {
@@ -795,6 +1080,10 @@ function syncMount() {
     mountOne(path, text, seen);
   }
   for (const [path, text] of shipped) {
+    /* "boot" stays the embedded image. A mount of the same name would hide it. */
+    if (path === "boot") {
+      continue;
+    }
     mountOne(path, text, seen);
   }
 }
@@ -896,7 +1185,7 @@ async function loadFile(fresh) {
       const bootCode = api.boot();
       const bootText = api.output();
       if (bootText) {
-        write(bootText, bootCode ? "err" : "");
+        writeBoot(bootText, bootCode ? "err" : "");
       }
       syncMount();
       api.setSource("");
@@ -938,11 +1227,65 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("sw.js").catch(() => {});
 }
 
+const menuBtn = document.querySelector("#menu-btn");
+const menuPanel = document.querySelector("#menu-panel");
+function setMenu(open) {
+  menuPanel.hidden = !open;
+  menuBtn.setAttribute("aria-expanded", open ? "true" : "false");
+}
+menuBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  setMenu(menuPanel.hidden);
+});
+menuPanel.addEventListener("click", (event) => {
+  event.stopPropagation();
+});
+document.addEventListener("click", () => setMenu(false));
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !menuPanel.hidden) {
+    setMenu(false);
+    menuBtn.focus();
+  }
+});
+
+document.querySelector("#show-boot").addEventListener("click", () => {
+  setMenu(false);
+  if (bootLog) {
+    write(bootLog);
+  }
+});
+
+document.querySelector("#open-folder").addEventListener("click", async () => {
+  setMenu(false);
+  if (typeof window.showDirectoryPicker !== "function") {
+    write("Open Folder needs Chrome or Edge.\n", "err");
+    return;
+  }
+  let handle;
+  try {
+    handle = await window.showDirectoryPicker({
+      id: "editforth",
+      mode: "readwrite",
+      startIn: "documents",
+    });
+  } catch (err) {
+    if (err && err.name === "AbortError") {
+      return;
+    }
+    write("Could not open that folder.\n", "err");
+    return;
+  }
+  await useFolder(handle);
+});
+
 const Module = await createEditForth({
   locateFile(path, prefix) {
-    return (prefix || "") + path + "?v=31";
+    return (prefix || "") + path + "?v=38";
   },
 });
+Module._forthDebug = (path, line, name, off, len) => {
+  showDebug(path, line, name, off, len);
+};
 const api = {
   boot: Module.cwrap("ef_web_boot", "number", []),
   eval: Module.cwrap("ef_web_eval", "number", ["string"], { async: true }),
@@ -954,9 +1297,15 @@ const api = {
   bye: Module.cwrap("ef_web_bye", "number", []),
   errorLine: Module.cwrap("ef_web_error_line", "number", []),
   errorName: Module.cwrap("ef_web_error_name", "string", []),
+  bootSource: Module.cwrap("ef_web_boot_source", "string", []),
   postKey: Module.cwrap("ef_web_post_key", null, ["number"]),
   keyWaiting: Module.cwrap("ef_web_key_waiting", "number", []),
 };
+
+const cold = api.bootSource();
+if (cold) {
+  shipped.set("boot", cold);
+}
 
 let shownOut = 0;
 function pumpDebug() {
@@ -990,7 +1339,7 @@ try {
 
 const bootCode = api.boot();
 if (api.output()) {
-  write(api.output());
+  writeBoot(api.output());
 }
 if (bootCode !== 0) {
   write("boot throw " + bootCode + "\n", "err");
@@ -1001,27 +1350,6 @@ if (bootCode !== 0) {
 setPrompt();
 showNone();
 
-document.querySelector("#open-folder").addEventListener("click", async () => {
-  if (typeof window.showDirectoryPicker !== "function") {
-    write("Open Folder needs Chrome or Edge.\n", "err");
-    return;
-  }
-  let handle;
-  try {
-    handle = await window.showDirectoryPicker({
-      id: "editforth",
-      mode: "readwrite",
-      startIn: "documents",
-    });
-  } catch (err) {
-    if (err && err.name === "AbortError") {
-      return;
-    }
-    write("Could not open that folder.\n", "err");
-    return;
-  }
-  await useFolder(handle);
-});
 document.querySelector("#load").addEventListener("click", () => loadFile(false));
 document.querySelector("#restart").addEventListener("click", () => loadFile(true));
 document.querySelector("#close-file").addEventListener("click", () => {
@@ -1061,12 +1389,13 @@ nameInput.addEventListener("keydown", (event) => {
 });
 editor.addEventListener("scroll", syncGutter);
 editor.addEventListener("input", () => {
+  clearHighlight();
   paintLines();
   const tab = currentTab();
   if (!tab) {
     return;
   }
-  if (tab.path) {
+  if (tab.path && files.has(tab.path)) {
     files.set(tab.path, editor.value);
   } else {
     tab.text = editor.value;
@@ -1209,19 +1538,27 @@ async function submitLine(folderPick, lineOverride) {
   }
 }
 
+document.addEventListener("keydown", (event) => {
+  if (!api.keyWaiting() || event.isComposing) {
+    return;
+  }
+  const code = debugCode(event);
+  if (code == null) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  if (!event.repeat) {
+    api.postKey(code);
+  }
+}, true);
+
 log.addEventListener("keydown", (event) => {
   if (event.isComposing) {
     return;
   }
   if (api.keyWaiting()) {
     event.preventDefault();
-    if (event.repeat) {
-      return;
-    }
-    const code = debugCode(event);
-    if (code != null) {
-      api.postKey(code);
-    }
     return;
   }
   if (event.key === "ArrowUp" || event.key === "ArrowDown") {
@@ -1307,6 +1644,7 @@ log.addEventListener("input", () => {
 });
 
 installSplitter();
+installTreeSplitter();
 
 function installSplitter() {
   const split = document.querySelector("#split");
@@ -1396,4 +1734,112 @@ function installSplitter() {
       apply(height, true);
     }
   }).observe(main);
+}
+
+function installTreeSplitter() {
+  const split = document.querySelector("#tree-split");
+  const workspace = document.querySelector("#workspace");
+  const tree = document.querySelector("#tree");
+  const key = "editforth.treeWidth";
+  const defaultWidth = 220;
+  const minTree = 140;
+  const minEditor = 240;
+  const splitWidth = 18;
+  const narrow = window.matchMedia("(max-width: 700px)");
+
+  function cap() {
+    return Math.max(0, workspace.clientWidth - minEditor - splitWidth);
+  }
+
+  function apply(px, persist) {
+    if (narrow.matches) {
+      tree.style.width = "";
+      return defaultWidth;
+    }
+    const limit = cap();
+    const floor = Math.min(minTree, limit);
+    const next = Math.round(Math.min(Math.max(px, floor), limit));
+    tree.style.width = next + "px";
+    split.setAttribute("aria-valuemin", String(Math.round(floor)));
+    split.setAttribute("aria-valuemax", String(Math.round(limit)));
+    split.setAttribute("aria-valuenow", String(next));
+    if (persist) {
+      stored = next;
+      try {
+        localStorage.setItem(key, String(next));
+      } catch (err) {
+        /* private mode can refuse storage */
+      }
+    }
+    return next;
+  }
+
+  let stored = defaultWidth;
+  try {
+    const raw = Number(localStorage.getItem(key));
+    if (Number.isFinite(raw) && raw > 0) {
+      stored = raw;
+    }
+  } catch (err) {
+    stored = defaultWidth;
+  }
+  apply(stored, false);
+
+  let drag = null;
+  split.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || narrow.matches) {
+      return;
+    }
+    drag = { x: event.clientX, w: tree.getBoundingClientRect().width };
+    split.setPointerCapture(event.pointerId);
+    document.body.classList.add("resizing-x");
+    event.preventDefault();
+  });
+  split.addEventListener("pointermove", (event) => {
+    if (!drag) {
+      return;
+    }
+    apply(drag.w + (event.clientX - drag.x), false);
+  });
+  function endDrag() {
+    if (!drag) {
+      return;
+    }
+    drag = null;
+    document.body.classList.remove("resizing-x");
+    apply(tree.getBoundingClientRect().width, true);
+  }
+  split.addEventListener("pointerup", endDrag);
+  split.addEventListener("pointercancel", endDrag);
+  split.addEventListener("lostpointercapture", endDrag);
+
+  split.addEventListener("keydown", (event) => {
+    if (narrow.matches) {
+      return;
+    }
+    const step = event.shiftKey ? 40 : 16;
+    const width = tree.getBoundingClientRect().width;
+    if (event.key === "ArrowRight") {
+      apply(width + step, true);
+      event.preventDefault();
+    } else if (event.key === "ArrowLeft") {
+      apply(width - step, true);
+      event.preventDefault();
+    }
+  });
+
+  function refit() {
+    if (narrow.matches) {
+      tree.style.width = "";
+      return;
+    }
+    apply(stored, false);
+  }
+  narrow.addEventListener("change", refit);
+  new ResizeObserver(() => {
+    const width = tree.getBoundingClientRect().width;
+    if (!narrow.matches && width > cap() + 0.5) {
+      apply(width, true);
+    }
+  }).observe(workspace);
 }

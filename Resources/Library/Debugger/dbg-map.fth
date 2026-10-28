@@ -278,6 +278,12 @@ CREATE DBG-MAP-NAME  64 ALLOT
   {: addr -- :}
   addr C@ addr + 1+ 3 + -4 AND ;
 
+\ (.") lays down the same counted byte as (S") / SLIT-ADDR.
+\ Walking those bytes as call xts runs off the word and @ throws -16.
+: DBG-INLINE-STR?  ( xt -- flag )
+  DUP SLIT-ADDR = IF  DROP TRUE EXIT  THEN
+  ['] (.") = ;
+
 \ Body span in bytes (EXIT-inclusive). lim is a high-water mark: branch
 \ targets and one-cell lookahead after each token grow it. Ordinary CALL
 \ must use "addr CELL+ lim MAX" *after* advancing — "addr lim MAX" alone
@@ -306,7 +312,7 @@ CREATE DBG-MAP-NAME  64 ALLOT
                     addr 2 CELLS + TO addr
                     addr CELL+ lim MAX TO lim
                  ELSE
-                    xt SLIT-ADDR = IF
+                    xt DBG-INLINE-STR? IF
                        addr CELL+ DBG-SLIT-SKIP TO addr
                        addr CELL+ lim MAX TO lim
                     ELSE
@@ -349,7 +355,7 @@ CREATE DBG-MAP-NAME  64 ALLOT
         cell# ncells < IF  cmap cell# DBG-SLOT-CLEAR  THEN
         cell# 1+ TO cell#
      ELSE
-        xt SLIT-ADDR = IF
+        xt DBG-INLINE-STR? IF
            DBG-K-SLIT cmap cell# DBG-SLOT-KIND!
            0 cmap cell# DBG-SLOT-XT!
            body cell# 1+ CELLS + @ cmap cell# DBG-SLOT-PAY!

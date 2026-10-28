@@ -132,8 +132,10 @@ struct ef_vm {
 
     ef_emit_fn emit;
     ef_key_fn key;
+    ef_debug_fn debug_fn;
     void *emit_ctx;
     void *key_ctx;
+    void *debug_ctx;
 
     struct ef_mounted *mounted;
     char include_dir[512];
@@ -3241,7 +3243,85 @@ static void dbg_note_frame(ef_vm *vm, int32_t cfa) {
     vm->dbg_frame_n++;
 }
 
+/* VIEW path and 1-based line for a stamped xt. 0 if the header has no file. */
+static int view_stamp(ef_vm *vm, int32_t xt, char *path, int cap, int *line) {
+    int32_t ffa1 = 0;
+    int file_id;
+    int i;
+    int n;
+    const char *found = NULL;
+    if (!xt || (xt & 3) || xt < CELL || cap < 2) {
+        return 0;
+    }
+    if (load_quiet(vm, xt - CELL, &ffa1)) {
+        return 0;
+    }
+    *line = (int)(ffa1 & 0xffff);
+    file_id = (int)(((uint32_t)ffa1 >> 16) & 0x1fff);
+    if (!file_id || !*line) {
+        return 0;
+    }
+    for (i = 0; i < vm->nviews; i++) {
+        if (vm->views[i].id == file_id) {
+            found = vm->views[i].path;
+            break;
+        }
+    }
+    if (!found || !found[0]) {
+        return 0;
+    }
+    n = (int)strlen(found);
+    if (n >= cap) {
+        n = cap - 1;
+    }
+    memcpy(path, found, (size_t)n);
+    path[n] = 0;
+    return 1;
+}
+
+/* Enclosing colon first, then the peeked token. Same order as kernel_debug_location. */
+static void dbg_location(ef_vm *vm, char *path, int cap, int *line) {
+    path[0] = 0;
+    *line = 0;
+    if (view_stamp(vm, vm->dbg_cfa, path, cap, line)) {
+        return;
+    }
+    if (vm->dbg_xt != vm->dbg_cfa) {
+        view_stamp(vm, vm->dbg_xt, path, cap, line);
+    }
+}
+
+static void dbg_notify(ef_vm *vm, int active) {
+    char path[256];
+    char name[80];
+    int line = 0;
+    int off = 0;
+    int len = 0;
+    if (!vm->debug_fn) {
+        return;
+    }
+    if (!active) {
+        vm->dbg_host_off = 0;
+        vm->dbg_host_len = 0;
+        vm->debug_fn(vm->debug_ctx, "", 0, "", 0, 0);
+        return;
+    }
+    dbg_location(vm, path, (int)sizeof path, &line);
+    copy_name(vm, vm->dbg_xt, name, (int)sizeof name);
+    off = vm->dbg_host_off;
+    len = vm->dbg_host_len;
+    if (len <= 0 || off < 0) {
+        off = 0;
+        len = 0;
+    }
+    /* One paint consumes the span, so the next pause cannot reuse it. */
+    vm->dbg_host_off = 0;
+    vm->dbg_host_len = 0;
+    vm->debug_fn(vm->debug_ctx, path, line, name, off, len);
+}
+
 static void dbg_disarm(ef_vm *vm) {
+    int was = vm->dbg_armed;
     vm->dbg_armed = 0;
     vm->dbg_floor_on = 0;
     vm->dbg_bp_go = 0;
@@ -3249,6 +3329,9 @@ static void dbg_disarm(ef_vm *vm) {
     vm->dbg_break_asap = 0;
     vm->dbg_over = -1;
     vm->dbg_out = -1;
+    if (was) {
+        dbg_notify(vm, 0);
+    }
 }
 
 static void dbg_sync_flags(ef_vm *vm) {
@@ -3575,6 +3658,7 @@ static int dbg_fallback(ef_vm *vm) {
     dbg_print_name(vm);
     dbg_print_inline(vm);
     emit_ch(vm, '\n');
+    dbg_notify(vm, 1);
     for (;;) {
         int c;
         int mode;
@@ -3744,7 +3828,10 @@ static int p_dbg_print_name(ef_vm *vm) { dbg_print_name(vm); return EF_OK; }
 static int p_dbg_intoable(ef_vm *vm) {
     return push(vm, dbg_intoable(vm, vm->dbg_xt) ? -1 : 0);
 }
-static int p_dbg_host_paint(ef_vm *vm) { (void)vm; return EF_OK; }
+static int p_dbg_host_paint(ef_vm *vm) {
+    dbg_notify(vm, 1);
+    return EF_OK;
+}
 static int p_dbg_view_update(ef_vm *vm) { (void)vm; return EF_OK; }
 
 static int p_dbg_host_span(ef_vm *vm) {
@@ -5766,6 +5853,14 @@ void ef_set_emit(ef_vm *vm, ef_emit_fn fn, void *ctx) {
     vm->emit_ctx = ctx;
 }
 
+void ef_set_debug(ef_vm *vm, ef_debug_fn fn, void *ctx) {
+    if (!vm) {
+        return;
+    }
+    vm->debug_fn = fn;
+    vm->debug_ctx = ctx;
+}
+
 void ef_set_key(ef_vm *vm, ef_key_fn fn, void *ctx) {
     vm->key = fn;
     vm->key_ctx = ctx;
@@ -5830,6 +5925,10 @@ int ef_eval(ef_vm *vm, const char *text) {
     }
     vm->in_inner = saved_inner;
     return 0;
+}
+
+const char *ef_boot_source(void) {
+    return boot_fth;
 }
 
 int ef_boot(ef_vm *vm) {

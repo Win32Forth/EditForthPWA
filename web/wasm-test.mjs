@@ -2,6 +2,10 @@ import { readFileSync } from "node:fs";
 import createEditForth from "./editforth.js";
 
 const mod = await createEditForth();
+const paints = [];
+mod._forthDebug = (path, line, name, off, len) => {
+  paints.push({ path, line, name, off, len });
+};
 const boot = mod.cwrap("ef_web_boot", "number", []);
 const ev = mod.cwrap("ef_web_eval", "number", ["string"]);
 const out = mod.cwrap("ef_web_output", "string", []);
@@ -12,6 +16,7 @@ const mount = mod.cwrap("ef_web_mount", "number", ["string", "string"]);
 const setSource = mod.cwrap("ef_web_set_source", "number", ["string"]);
 const errLine = mod.cwrap("ef_web_error_line", "number", []);
 const errName = mod.cwrap("ef_web_error_name", "string", []);
+const bootSource = mod.cwrap("ef_web_boot_source", "string", []);
 
 function die(msg) {
   console.error(msg);
@@ -225,7 +230,13 @@ if (ev("DROP") !== 0 || depth() !== before) {
 if (ev("ALSO DEBUGGER 1 DBG-SPAN-TRACE ! PREVIOUS") !== 0 || depth() !== before) {
   die("span trace " + JSON.stringify(out()));
 }
+const cold = bootSource();
+const coldBytes = new TextEncoder().encode(cold);
+if (!cold.includes(": 2OVER") || coldBytes.length < 80000) {
+  die("boot source " + coldBytes.length);
+}
 const overBefore = depth();
+const overAt = paints.length;
 const overing = evAsync("1 2 3 4 DEBUG 2OVER");
 for (let i = 0; i < 7; i++) {
   await waitFor(() => keyWaiting());
@@ -250,6 +261,12 @@ for (let i = depth() - 6; i < depth(); i++) {
 if (overRc !== 0 || depth() !== overBefore + 6 || top.join(",") !== "1,2,3,4,1,2") {
   die("2over rc=" + overRc + " depth=" + depth() + " top=" + top.join(",") + " out=" + JSON.stringify(out()));
 }
+const overText = paints.slice(overAt)
+  .filter((p) => p.path === "boot" && p.line > 0 && p.len > 0 && p.off >= 0 && p.off + p.len <= coldBytes.length)
+  .map((p) => new TextDecoder().decode(coldBytes.subarray(p.off, p.off + p.len)));
+if (!overText.includes(">R")) {
+  die("boot highlight " + JSON.stringify(paints.slice(overAt)) + " text " + JSON.stringify(overText));
+}
 if (mount("walk.fth", ": WIF 1 IF 2 ELSE 3 THEN ;\n: WSTR S\" hi\" 2DROP ;\n: WEX IF EXIT THEN 1 ;\n") !== 0) {
   die("mount walk");
 }
@@ -269,11 +286,23 @@ async function steps(n, label) {
   }
 }
 const wifBefore = depth();
+const paintAt = paints.length;
 const wifing = evAsync("DEBUG WIF");
 await steps(5, "wif");
 const wifRc = await wifing;
 if (wifRc !== 0 || depth() !== wifBefore + 1 || item(depth() - 1) !== 2) {
   die("wif rc=" + wifRc + " depth=" + depth() + " top=" + item(depth() - 1) + " out=" + JSON.stringify(out()));
+}
+const walkSrc = ": WIF 1 IF 2 ELSE 3 THEN ;\n: WSTR S\" hi\" 2DROP ;\n: WEX IF EXIT THEN 1 ;\n";
+const walkBytes = new TextEncoder().encode(walkSrc);
+const walkPaints = paints.slice(paintAt).filter((p) => p.path === "walk.fth");
+const walkHits = walkPaints.filter((p) => p.len > 0 && p.line > 0);
+const walkText = walkHits.map((p) => new TextDecoder().decode(walkBytes.subarray(p.off, p.off + p.len)));
+if (!walkText.includes("1") || !walkPaints.some((p) => p.line > 0 && p.name)) {
+  die("highlight " + JSON.stringify(walkPaints) + " text " + JSON.stringify(walkText));
+}
+if (!paints.slice(paintAt).some((p) => p.path === "")) {
+  die("highlight stayed up " + JSON.stringify(paints.slice(paintAt)));
 }
 const wstrBefore = depth();
 const wstring = evAsync("DEBUG WSTR");
@@ -288,5 +317,24 @@ await steps(3, "wex");
 const wexRc = await wexing;
 if (wexRc !== 0 || depth() !== wexBefore + 1 || item(depth() - 1) !== 1) {
   die("wex rc=" + wexRc + " depth=" + depth() + " top=" + item(depth() - 1) + " out=" + JSON.stringify(out()));
+}
+const dotSrc = ': HDOT ." hi" ;\n';
+if (mount("dot.fth", dotSrc) !== 0) {
+  die("mount dot");
+}
+const dotInc = ev("INCLUDE dot.fth");
+if (dotInc !== 0 || depth() !== wexBefore + 1) {
+  die("dot include rc=" + dotInc + " depth=" + depth() + " out=" + JSON.stringify(out()));
+}
+const dotAt = paints.length;
+const doting = evAsync("DEBUG HDOT");
+await steps(2, "hdot");
+const dotRc = await doting;
+const dotBytes = new TextEncoder().encode(dotSrc);
+const dotText = paints.slice(dotAt)
+  .filter((p) => p.path === "dot.fth" && p.len > 0)
+  .map((p) => new TextDecoder().decode(dotBytes.subarray(p.off, p.off + p.len)));
+if (dotRc !== 0 || !out().includes("hi") || !dotText.includes('."')) {
+  die("hdot rc=" + dotRc + " text=" + JSON.stringify(dotText) + " out=" + JSON.stringify(out()));
 }
 console.log("wasm-test ok");

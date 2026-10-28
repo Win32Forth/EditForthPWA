@@ -15,6 +15,15 @@ static int g_waiting;
 /* Yield so the page can show the pause text and post the next key.
    A key typed while nothing is waiting is ignored, so a slow eval
    cannot arm the next DEBUG by accident. */
+static void web_debug(void *ctx, const char *path, int line, const char *name, int off, int len) {
+    (void)ctx;
+    EM_ASM({
+        if (typeof Module._forthDebug === "function") {
+            Module._forthDebug(Module.UTF8ToString($0), $1, Module.UTF8ToString($2), $3, $4);
+        }
+    }, path ? path : "", line, name ? name : "", off, len);
+}
+
 static int web_key(void *ctx) {
     (void)ctx;
     g_has_key = 0;
@@ -53,6 +62,11 @@ static void web_emit(void *ctx, int ch) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+const char *ef_web_boot_source(void) {
+    return ef_boot_source();
+}
+
+EMSCRIPTEN_KEEPALIVE
 int ef_web_boot(void) {
     if (g_vm) {
         ef_destroy(g_vm);
@@ -65,6 +79,7 @@ int ef_web_boot(void) {
     }
     ef_set_emit(g_vm, web_emit, NULL);
     ef_set_key(g_vm, web_key, NULL);
+    ef_set_debug(g_vm, web_debug, NULL);
     g_has_key = 0;
     g_waiting = 0;
     return ef_boot(g_vm);

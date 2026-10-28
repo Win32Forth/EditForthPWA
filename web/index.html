@@ -27,6 +27,56 @@
       border-bottom: 1px solid #d0d0d0;
     }
     header h1 { font-size: 16px; font-weight: 600; margin: 0; }
+    #app-menu { position: relative; flex: none; }
+    #menu-btn {
+      width: 36px;
+      height: 32px;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      background: transparent;
+      border: 0;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    #menu-btn span {
+      display: block;
+      width: 16px;
+      height: 2px;
+      background: #111111;
+      border-radius: 1px;
+    }
+    #menu-btn:hover,
+    #menu-btn[aria-expanded="true"] { background: #f3f3f3; }
+    #menu-panel {
+      position: absolute;
+      z-index: 6;
+      top: calc(100% + 6px);
+      left: 0;
+      width: max-content;
+      min-width: 180px;
+      padding: 6px;
+      background: #ffffff;
+      border: 1px solid #b0b0b0;
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(17, 17, 17, 0.12);
+    }
+    #menu-panel[hidden] { display: none; }
+    #menu-panel button {
+      display: block;
+      width: 100%;
+      white-space: nowrap;
+      text-align: left;
+      background: transparent;
+      border: 0;
+      border-radius: 4px;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+    #menu-panel button:hover { background: #f3f3f3; }
     #where, #folder {
       color: #444444;
       overflow: hidden;
@@ -58,11 +108,33 @@
     #tree {
       width: 220px;
       flex: none;
-      border-right: 1px solid #d0d0d0;
       display: flex;
       flex-direction: column;
       min-height: 0;
       min-width: 0;
+    }
+    #tree-split {
+      flex: none;
+      width: 18px;
+      cursor: ew-resize;
+      touch-action: none;
+      user-select: none;
+      background: #e4e4e4;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #tree-split::before {
+      content: "";
+      width: 3px;
+      height: 100%;
+      background: #8e8e8e;
+    }
+    #tree-split:hover,
+    body.resizing-x #tree-split { background: #d4d4d4; }
+    body.resizing-x, body.resizing-x * {
+      cursor: ew-resize;
+      user-select: none;
     }
     #main {
       flex: 1;
@@ -162,6 +234,36 @@
       min-height: 0;
       display: flex;
       flex-direction: row;
+    }
+    #editor-pane {
+      position: relative;
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+    }
+    #hl {
+      display: none;
+      position: absolute;
+      inset: 0;
+      margin: 0;
+      overflow: hidden;
+      pointer-events: none;
+      white-space: pre;
+      color: #111111;
+      background: #ffffff;
+      padding: 12px 14px;
+      line-height: 21px;
+      font: inherit;
+    }
+    #editor-pane.debugging #hl { display: block; }
+    #editor-pane.debugging #editor {
+      background: transparent;
+      color: transparent;
+    }
+    #hl mark {
+      background: rgba(52, 199, 89, 0.35);
+      color: #111111;
     }
     #gutter {
       flex: none;
@@ -274,22 +376,29 @@
     @media (max-width: 700px) {
       #workspace { flex-direction: column; }
       #tree {
-        width: auto;
+        width: auto !important;
         height: 150px;
-        border-right: 0;
         border-bottom: 1px solid #d0d0d0;
       }
+      #tree-split { display: none; }
     }
   </style>
 </head>
 <body>
   <header>
+    <div id="app-menu">
+      <button id="menu-btn" type="button" aria-label="Menu" aria-haspopup="true" aria-expanded="false" aria-controls="menu-panel" title="Menu">
+        <span></span><span></span><span></span>
+      </button>
+      <div id="menu-panel" role="menu" hidden>
+        <button id="open-folder" type="button" role="menuitem">Open Folder</button>
+        <button id="show-boot" type="button" role="menuitem">Show boot messages</button>
+      </div>
+    </div>
     <h1>EditForth</h1>
     <span id="folder"></span>
     <span id="where"></span>
     <span class="spacer"></span>
-    <button id="open-folder" type="button">Open Folder</button>
-    <button id="save" type="button" title="Save this file. A new file asks for a name. (Cmd+S or Ctrl+S)" disabled>Save</button>
     <button id="load" class="primary" type="button" title="Include this file (Cmd+Enter or Ctrl+Enter)">Include</button>
     <button id="restart" type="button" title="Fresh image">Restart</button>
     <button id="install" hidden type="button">Install</button>
@@ -299,12 +408,14 @@
       <div class="tools">
         <button id="new-file" type="button">New</button>
         <button id="close-file" type="button" title="Close this tab. You choose whether to save.">Close</button>
+        <button id="save" type="button" title="Save this file. A new file asks for a name. (Cmd+S or Ctrl+S)" disabled>Save</button>
       </div>
       <form id="name-form" hidden>
         <input id="name-input" placeholder="Save as name.fth or lib/name.fth" aria-label="Save as" autocomplete="off" spellcheck="false">
       </form>
       <div id="listing"></div>
     </aside>
+    <div id="tree-split" role="separator" aria-orientation="vertical" aria-label="Resize file list" aria-controls="tree" tabindex="0" title="Drag to resize the file list"></div>
     <div id="main">
       <section id="edit">
         <div id="tabs"></div>
@@ -316,7 +427,10 @@
         </div>
         <div id="editor-row">
           <div id="gutter" aria-hidden="true"><div id="gutter-inner"><div id="gutter-mark" hidden></div><pre id="gutter-nums"></pre></div></div>
-          <textarea id="editor" wrap="off" spellcheck="false" autocomplete="off" aria-label="Forth source"></textarea>
+          <div id="editor-pane">
+            <pre id="hl" aria-hidden="true"></pre>
+            <textarea id="editor" wrap="off" spellcheck="false" autocomplete="off" aria-label="Forth source"></textarea>
+          </div>
         </div>
       </section>
       <div id="split" role="separator" aria-orientation="horizontal" aria-label="Resize console" aria-controls="console" tabindex="0" title="Drag to resize the console"></div>
@@ -335,6 +449,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="app.js?v=31"></script>
+  <script type="module" src="app.js?v=38"></script>
 </body>
 </html>
