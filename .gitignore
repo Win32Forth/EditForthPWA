@@ -1,3 +1,4 @@
 build/
 web/editforth.wasm.map
+_site/
 .DS_Store

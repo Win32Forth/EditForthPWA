@@ -30,6 +30,8 @@ make test
 
 `make test` checks division by zero, an undefined word, and `test/smoke.fth`. `make wasm-test` checks the same engine under Node, including `INCLUDE` of mounted files. `make` from another directory has no rules. Run it in this folder. After a Forth source changes, if `make` keeps an old image, delete `build/boot.inc` and build again.
 
+GitHub Pages serves this release at `https://win32forth.github.io/EditForthPWA/`. A push to `main` publishes the `web` folder. The publish step copies `Resources` as real files and writes a listing page in each folder, which is what the Resources button reads. Pages does not follow the `web/Resources` shortcut or list folders on its own.
+
 `web/editforth.js` and `web/editforth.wasm` are the engine the page loads. Both are in the repository. `make wasm` rebuilds them from `kernel/ef32.c`, `host/web_main.c`, and the cold files in `forth/`. When that build changes, commit the new pair with the sources. `web/editforth.wasm.map` is not committed. `make clean` deletes the pair. Run `make wasm` to put it back. `build/` stays out of the repository. The terminal binary `build/editforth` is not committed.
 
 The page cache is named in `web/sw.js`. After a rebuild, reload the page so the new script and wasm are fetched.
