@@ -1,4 +1,4 @@
-import createEditForth from "./editforth.js?v=38";
+import createEditForth from "./editforth.js?v=44";
 
 const log = document.querySelector("#log");
 const installBtn = document.querySelector("#install");
@@ -8,6 +8,9 @@ const hl = document.querySelector("#hl");
 const tabsEl = document.querySelector("#tabs");
 const banner = document.querySelector("#banner");
 const saveBtn = document.querySelector("#save");
+const shareBtn = document.querySelector("#share-file");
+const privateBtn = document.querySelector("#show-private");
+const resourcesBtn = document.querySelector("#show-resources");
 const gutterInner = document.querySelector("#gutter-inner");
 const gutterNums = document.querySelector("#gutter-nums");
 const gutterMark = document.querySelector("#gutter-mark");
@@ -16,7 +19,7 @@ const where = document.querySelector("#where");
 const nameForm = document.querySelector("#name-form");
 const nameInput = document.querySelector("#name-input");
 
-const BANNER = "=== EditForthPWA 2.5.6 === Oct 26, 2026 3:26 PM ===\n";
+const BANNER = "=== EditForthPWA 0.5.0 === Oct 28, 2026 11:42 AM ===\n";
 
 const SEED =
   "\\ Cmd+Enter or Ctrl+Enter loads this file.\n" +
@@ -27,6 +30,10 @@ const SEED =
 
 const files = new Map();
 const shipped = new Map();
+const resourceText = new Map();
+let resourcePaths = null;
+let resourceIndexTask = null;
+let listSource = "private";
 const SHIPPED_LIB = [
   "Resources/Library/Debugger/debugger.fth",
   "Resources/Library/Debugger/debug-bp.fth",
@@ -49,6 +56,16 @@ let ready = false;
 let busy = false;
 let opfs = null;
 let diskFolder = false;
+let idbFiles = false;
+let browserCopies = new Set();
+try {
+  const savedCopies = JSON.parse(localStorage.getItem("editforth.browserCopies") || "[]");
+  if (Array.isArray(savedCopies)) {
+    browserCopies = new Set(savedCopies.filter((item) => typeof item === "string"));
+  }
+} catch (err) {
+  browserCopies = new Set();
+}
 let saveError = "";
 let skippedForth = 0;
 
@@ -245,9 +262,15 @@ function skipFile(name, size) {
 
 function openDb() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open("editforth-pwa", 1);
+    const req = indexedDB.open("editforth-pwa", 2);
     req.onupgradeneeded = () => {
-      req.result.createObjectStore("handles");
+      const db = req.result;
+      if (!db.objectStoreNames.contains("handles")) {
+        db.createObjectStore("handles");
+      }
+      if (!db.objectStoreNames.contains("files")) {
+        db.createObjectStore("files");
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -287,26 +310,226 @@ function showFolder(handle) {
   folder.textContent = diskFolder && handle && handle.name ? handle.name : "";
 }
 
-async function writeFile(path, text) {
-  if (!opfs) {
+async function writeHandle(root, path, text) {
+  const parts = path.split("/");
+  let dir = root;
+  for (let i = 0; i < parts.length - 1; i++) {
+    dir = await dir.getDirectoryHandle(parts[i], { create: true });
+  }
+  const handle = await dir.getFileHandle(parts[parts.length - 1], { create: true });
+  if (typeof handle.createWritable !== "function") {
+    throw new Error("createWritable is missing");
+  }
+  const writable = await handle.createWritable();
+  await writable.write(text);
+  await writable.close();
+}
+
+let privateWriter = null;
+let privateWriteSeq = 0;
+
+function privateWriteWorker() {
+  if (privateWriter) {
+    return privateWriter;
+  }
+  const source = `
+    self.onmessage = async (event) => {
+      const id = event.data.id;
+      try {
+        const parts = event.data.path.split("/");
+        let dir = await navigator.storage.getDirectory();
+        for (let i = 0; i < parts.length - 1; i++) {
+          dir = await dir.getDirectoryHandle(parts[i], { create: true });
+        }
+        const handle = await dir.getFileHandle(parts[parts.length - 1], { create: true });
+        const access = await handle.createSyncAccessHandle();
+        const data = new TextEncoder().encode(event.data.text);
+        access.truncate(0);
+        access.write(data, { at: 0 });
+        access.flush();
+        access.close();
+        self.postMessage({ id, ok: true });
+      } catch (err) {
+        self.postMessage({ id, ok: false, message: err && err.message ? String(err.message) : String(err) });
+      }
+    };
+  `;
+  privateWriter = new Worker(URL.createObjectURL(new Blob([source], { type: "text/javascript" })));
+  return privateWriter;
+}
+
+function writePrivateWorker(path, text) {
+  const worker = privateWriteWorker();
+  const id = ++privateWriteSeq;
+  return new Promise((resolve, reject) => {
+    const finish = (err) => {
+      worker.removeEventListener("message", onMessage);
+      worker.removeEventListener("error", onError);
+      if (err) {
+        reject(err);
+      } else {
+        resolve();
+      }
+    };
+    const onMessage = (event) => {
+      if (!event.data || event.data.id !== id) {
+        return;
+      }
+      if (event.data.ok) {
+        finish();
+      } else {
+        finish(new Error(event.data.message || "save failed"));
+      }
+    };
+    const onError = () => {
+      privateWriter = null;
+      finish(new Error("private save failed"));
+    };
+    worker.addEventListener("message", onMessage);
+    worker.addEventListener("error", onError);
+    worker.postMessage({ id, path, text });
+  });
+}
+
+function rememberBrowserCopy(path) {
+  browserCopies.add(path);
+  try {
+    localStorage.setItem("editforth.browserCopies", JSON.stringify([...browserCopies]));
+  } catch (err) {
+    /* The copy is still in this session's file list. */
+  }
+}
+
+async function readIdbFile(path) {
+  const db = await openDb();
+  try {
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction("files", "readonly");
+      const req = tx.objectStore("files").get(path);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function mergeBrowserCopies() {
+  for (const path of browserCopies) {
+    try {
+      const text = await readIdbFile(path);
+      if (typeof text === "string") {
+        files.set(path, text);
+      }
+    } catch (err) {
+      /* Skip a copy the browser database cannot read. */
+    }
+  }
+}
+
+async function writeBrowserCopy(path, text) {
+  try {
+    if (diskFolder) {
+      await writeIdbFile(path, text);
+      rememberBrowserCopy(path);
+    } else if (!(await writeFile(path, text))) {
+      return false;
+    }
+    files.set(path, text);
+    return true;
+  } catch (err) {
+    const detail = err && err.message ? err.message : String(err);
+    write("Could not save a private copy of " + path + ". " + detail + "\n", "err");
     return false;
   }
+}
+
+async function writeIdbFile(path, text) {
+  const db = await openDb();
   try {
-    const parts = path.split("/");
-    let dir = opfs;
-    for (let i = 0; i < parts.length - 1; i++) {
-      dir = await dir.getDirectoryHandle(parts[i], { create: true });
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("files", "readwrite");
+      tx.objectStore("files").put(text, path);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function loadIdbFiles() {
+  const db = await openDb();
+  try {
+    const rows = await new Promise((resolve, reject) => {
+      const tx = db.transaction("files", "readonly");
+      const store = tx.objectStore("files");
+      const keysReq = store.getAllKeys();
+      const valsReq = store.getAll();
+      tx.oncomplete = () => resolve([keysReq.result || [], valsReq.result || []]);
+      tx.onerror = () => reject(tx.error);
+    });
+    files.clear();
+    for (let i = 0; i < rows[0].length; i++) {
+      files.set(String(rows[0][i]), rows[1][i]);
     }
-    const handle = await dir.getFileHandle(parts[parts.length - 1], { create: true });
-    const writable = await handle.createWritable();
-    await writable.write(text);
-    await writable.close();
+  } finally {
+    db.close();
+  }
+}
+
+function markIdb() {
+  idbFiles = true;
+  try {
+    localStorage.setItem("editforth.idbFiles", "1");
+  } catch (err) {
+    /* A private window can refuse localStorage. This session still uses the database. */
+  }
+}
+
+function preferIdb() {
+  try {
+    return localStorage.getItem("editforth.idbFiles") === "1";
+  } catch (err) {
+    return false;
+  }
+}
+
+async function seedIdb() {
+  markIdb();
+  await loadIdbFiles();
+  if (files.size === 0) {
+    files.set("work.fth", SEED);
+    await writeIdbFile("work.fth", SEED);
+  }
+}
+
+async function writeFile(path, text) {
+  try {
+    if (diskFolder && opfs) {
+      await writeHandle(opfs, path, text);
+    } else if (opfs && !idbFiles) {
+      try {
+        await writeHandle(opfs, path, text);
+      } catch (err) {
+        try {
+          await writePrivateWorker(path, text);
+        } catch (err2) {
+          await writeIdbFile(path, text);
+          markIdb();
+        }
+      }
+    } else {
+      await writeIdbFile(path, text);
+      markIdb();
+    }
     saveError = "";
     return true;
   } catch (err) {
     if (saveError !== path) {
       saveError = path;
-      write("Could not save " + path + ".\n", "err");
+      const detail = err && err.message ? err.message : String(err);
+      write("Could not save a private copy of " + path + ". " + detail + "\n", "err");
     }
     return false;
   }
@@ -353,6 +576,9 @@ async function readRoot() {
   files.clear();
   for (const [path, text] of next) {
     files.set(path, text);
+  }
+  if (diskFolder) {
+    await mergeBrowserCopies();
   }
 }
 
@@ -409,6 +635,81 @@ async function useFolder(handle) {
   return true;
 }
 
+function listedPaths() {
+  if (listSource === "resources") {
+    return resourcePaths || [];
+  }
+  return [...files.keys()];
+}
+
+function resourceUrl(path) {
+  return path.split("/").map((part) => encodeURIComponent(part)).join("/");
+}
+
+async function fetchResourcePaths(dir) {
+  const res = await fetch(resourceUrl(dir) + "/");
+  if (!res.ok) {
+    throw new Error(String(res.status));
+  }
+  const html = await res.text();
+  const found = [];
+  for (const match of html.matchAll(/<a href="([^"]*)"/gi)) {
+    const href = match[1];
+    if (!href || href.startsWith("/") || href.startsWith("?") || href.includes("://") || href.includes("..")) {
+      continue;
+    }
+    let name;
+    try {
+      name = decodeURIComponent(href);
+    } catch (err) {
+      continue;
+    }
+    if (!name || name === "../") {
+      continue;
+    }
+    if (name.endsWith("/")) {
+      found.push(...await fetchResourcePaths(dir + "/" + name.slice(0, -1)));
+    } else {
+      found.push(dir + "/" + name);
+    }
+  }
+  return found;
+}
+
+function loadResourceIndex() {
+  if (!resourceIndexTask) {
+    resourceIndexTask = fetchResourcePaths("Resources").then((paths) => {
+      resourcePaths = paths;
+      return paths;
+    }).catch((err) => {
+      resourceIndexTask = null;
+      throw err;
+    });
+  }
+  return resourceIndexTask;
+}
+
+function paintSourceSwitch() {
+  const resources = listSource === "resources";
+  privateBtn.setAttribute("aria-pressed", resources ? "false" : "true");
+  resourcesBtn.setAttribute("aria-pressed", resources ? "true" : "false");
+  document.body.classList.toggle("resources-list", resources);
+  document.querySelector("#list-note").hidden = !resources;
+}
+
+async function setListSource(source) {
+  listSource = source === "resources" ? "resources" : "private";
+  paintSourceSwitch();
+  if (listSource === "resources" && !resourcePaths) {
+    try {
+      await loadResourceIndex();
+    } catch (err) {
+      write("Could not list Resources.\n", "err");
+    }
+  }
+  renderTree();
+}
+
 function renderTree() {
   const root = { dirs: new Map(), files: [] };
   function nodeFor(path) {
@@ -422,7 +723,7 @@ function renderTree() {
     }
     return { node, leaf: parts[parts.length - 1] };
   }
-  for (const path of files.keys()) {
+  for (const path of listedPaths()) {
     nodeFor(path).node.files.push(nodeFor(path).leaf);
   }
   listing.replaceChildren();
@@ -444,10 +745,14 @@ function renderTree() {
       button.dataset.path = path;
       button.textContent = name;
       button.style.paddingLeft = 8 + depth * 14 + "px";
+      button.className = listSource === "resources" ? "locked" : "";
       if (path === currentPath) {
-        button.className = "active";
+        button.className += " active";
       }
-      button.addEventListener("click", () => openFile(path));
+      if (listSource === "resources") {
+        button.title = "Read only";
+      }
+      button.addEventListener("click", () => openListed(path));
       listing.appendChild(button);
     }
   }
@@ -511,7 +816,15 @@ async function saveTab(tab) {
   }
   rememberEditor();
   const text = files.get(tab.path) ?? "";
-  if (!(await writeFile(tab.path, text))) {
+  if (browserCopies.has(tab.path)) {
+    try {
+      await writeIdbFile(tab.path, text);
+    } catch (err) {
+      const detail = err && err.message ? err.message : String(err);
+      write("Could not save a private copy of " + tab.path + ". " + detail + "\n", "err");
+      return false;
+    }
+  } else if (!(await writeFile(tab.path, text))) {
     return false;
   }
   tab.saved = text;
@@ -590,19 +903,43 @@ function cancelSaveAs() {
   pending.resolve(false);
 }
 
+async function saveIntoPrivate(tab) {
+  rememberEditor();
+  const text = bufferOf(tab);
+  if (!(await writeBrowserCopy(tab.path, text))) {
+    return false;
+  }
+  tab.saved = text;
+  tab.text = "";
+  syncMount();
+  if (listSource !== "private") {
+    listSource = "private";
+    paintSourceSwitch();
+  }
+  write("Saved in Private: " + tab.path + "\n");
+  updateSaveButton();
+  renderTabs();
+  renderTree();
+  return true;
+}
+
 async function saveDirty(tab) {
   if (!tab) {
     return false;
   }
-  if (!tab.path || !files.has(tab.path)) {
+  if (!tab.path || tab.path === "boot") {
     return saveAs(tab);
+  }
+  if (!files.has(tab.path)) {
+    return saveIntoPrivate(tab);
   }
   return saveTab(tab);
 }
 
 function updateSaveButton() {
   const tab = currentTab();
-  saveBtn.disabled = !tab || bufferOf(tab) === tab.saved;
+  saveBtn.disabled = !tab;
+  shareBtn.disabled = !tab;
 }
 
 function renderTabs() {
@@ -619,12 +956,8 @@ function renderTabs() {
     select.textContent = (dirty ? "• " : "") + (dup ? tab.path : leaf);
     select.title = tab.path || tab.title;
     select.addEventListener("click", () => {
-      if (tab.path) {
-        openFile(tab.path);
-      } else {
-        rememberEditor();
-        showTab(tab);
-      }
+      rememberEditor();
+      showTab(tab);
     });
     const close = document.createElement("button");
     close.type = "button";
@@ -648,7 +981,98 @@ function leaveView() {
   tab.view = false;
   editor.readOnly = false;
   banner.hidden = true;
+  paintModeMenu();
   editor.focus();
+}
+
+function paintModeMenu() {
+  const item = document.querySelector("#toggle-readonly");
+  const tab = currentTab();
+  if (!item) {
+    return;
+  }
+  if (!tab) {
+    item.disabled = true;
+    item.textContent = "Read Only";
+    return;
+  }
+  item.disabled = false;
+  item.textContent = tab.view ? "Make Editable" : "Read Only";
+}
+
+async function editPrivateCopy(path) {
+  let tab = tabs.find((item) => item.path === path && !item.shared);
+  if (!tab) {
+    tab = {
+      id: nextTabId++,
+      path,
+      title: path.split("/").pop(),
+      saved: files.get(path) ?? "",
+      view: false,
+      text: "",
+      shared: false,
+    };
+    tabs.push(tab);
+  }
+  tab.view = false;
+  listSource = "private";
+  paintSourceSwitch();
+  showTab(tab);
+}
+
+async function makeEditable(tab) {
+  if (!tab) {
+    return;
+  }
+  if (!tab.shared) {
+    tab.view = false;
+    showTab(tab);
+    return;
+  }
+  const exists = files.has(tab.path);
+  const message = exists
+    ? "A private copy of " + tab.path + " already exists. Open that copy for editing?"
+    : "Copy " + tab.path + " to Private and edit it?";
+  if (!window.confirm(message)) {
+    return;
+  }
+  if (exists) {
+    await editPrivateCopy(tab.path);
+    return;
+  }
+  const text = bufferOf(tab);
+  if (!(await writeBrowserCopy(tab.path, text))) {
+    return;
+  }
+  tab.shared = false;
+  tab.view = false;
+  tab.saved = text;
+  tab.text = "";
+  listSource = "private";
+  paintSourceSwitch();
+  write("Saved in Private: " + tab.path + "\n");
+  showTab(tab);
+}
+
+function makeReadOnly(tab) {
+  if (!tab) {
+    return;
+  }
+  rememberEditor();
+  tab.view = true;
+  showTab(tab);
+}
+
+function toggleReadOnly() {
+  const tab = currentTab();
+  if (!tab) {
+    return;
+  }
+  if (tab.view) {
+    makeEditable(tab);
+  } else {
+    makeReadOnly(tab);
+  }
 }
 
 function showTab(tab, opts) {
@@ -667,12 +1091,19 @@ function showTab(tab, opts) {
   }
   editor.readOnly = tab.view;
   banner.hidden = !tab.view;
+  const note = document.querySelector("#banner-note");
+  if (note) {
+    note.textContent = tab.shared
+      ? "Read only. Edit copies this file to Private."
+      : "Read-only — typing asks to switch to Edit";
+  }
   where.textContent = tab.path || tab.title;
   where.className = "";
   paintLines();
   renderTabs();
   renderTree();
   updateSaveButton();
+  paintModeMenu();
   editor.focus();
 }
 
@@ -689,6 +1120,7 @@ function showNone() {
   renderTabs();
   renderTree();
   updateSaveButton();
+  paintModeMenu();
 }
 
 function newUntitled() {
@@ -705,14 +1137,98 @@ function newUntitled() {
   showTab(tab);
 }
 
+async function openShared(path, opts) {
+  rememberEditor();
+  let tab = tabs.find((item) => item.path === path && item.shared);
+  if (!tab) {
+    let text = resourceText.get(path);
+    if (text == null) {
+      try {
+        const res = await fetch(resourceUrl(path));
+        if (!res.ok) {
+          throw new Error(String(res.status));
+        }
+        text = await res.text();
+      } catch (err) {
+        write("Could not open " + path + ".\n", "err");
+        return;
+      }
+      resourceText.set(path, text);
+    }
+    tab = { id: nextTabId++, path, title: path.split("/").pop(), saved: text, view: true, text, shared: true };
+    tabs.push(tab);
+  }
+  tab.shared = true;
+  tab.view = true;
+  showTab(tab, opts);
+}
+
+async function openListed(path) {
+  if (listSource === "resources") {
+    await openShared(path);
+    return;
+  }
+  await openFile(path);
+}
+
 async function openFile(path, opts) {
   rememberEditor();
-  let tab = tabs.find((item) => item.path === path);
+  let tab = tabs.find((item) => item.path === path && !item.shared);
   if (!tab) {
-    tab = { id: nextTabId++, path, title: path.split("/").pop(), saved: files.get(path) ?? "", view: false, text: "" };
+    tab = { id: nextTabId++, path, title: path.split("/").pop(), saved: files.get(path) ?? "", view: false, text: "", shared: false };
     tabs.push(tab);
   }
   showTab(tab, opts);
+}
+
+function downloadCopy(name, file) {
+  const url = URL.createObjectURL(file);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+async function shareCurrent() {
+  const tab = currentTab();
+  if (!tab) {
+    return;
+  }
+  rememberEditor();
+  const text = bufferOf(tab);
+  const name = (tab.path && tab.path.split("/").pop()) || tab.title || "Untitled.fth";
+  const file = new File([text], name, { type: "text/plain" });
+  const filesPayload = { files: [file], title: name };
+  if (navigator.canShare && navigator.canShare(filesPayload)) {
+    try {
+      await navigator.share(filesPayload);
+      return;
+    } catch (err) {
+      if (err && err.name === "AbortError") {
+        return;
+      }
+    }
+  }
+  if (typeof window.showSaveFilePicker === "function") {
+    try {
+      const dot = name.lastIndexOf(".");
+      const ext = dot > 0 ? name.slice(dot) : ".txt";
+      const handle = await window.showSaveFilePicker({
+        suggestedName: name,
+        types: [{ description: "Text", accept: { "text/plain": [ext] } }],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(text);
+      await writable.close();
+      return;
+    } catch (err) {
+      if (err && err.name === "AbortError") {
+        return;
+      }
+    }
+  }
+  downloadCopy(name, file);
 }
 
 async function closeTab(id) {
@@ -966,7 +1482,10 @@ function showDebug(path, line, name, off, len) {
   if (known == null) {
     return;
   }
-  let tab = tabs.find((item) => item.path === path);
+  let tab = tabs.find((item) => item.path === path && !item.shared);
+  if (!tab && !files.has(path)) {
+    tab = tabs.find((item) => item.path === path);
+  }
   if (!tab) {
     if (files.has(path)) {
       openFile(path, { view: true });
@@ -1280,7 +1799,7 @@ document.querySelector("#open-folder").addEventListener("click", async () => {
 
 const Module = await createEditForth({
   locateFile(path, prefix) {
-    return (prefix || "") + path + "?v=38";
+    return (prefix || "") + path + "?v=44";
   },
 });
 Module._forthDebug = (path, line, name, off, len) => {
@@ -1320,20 +1839,29 @@ Module._forthPump = pumpDebug;
 
 write(BANNER);
 try {
-  const saved = await loadHandle();
-  if (saved && (await saved.queryPermission({ mode: "readwrite" })) === "granted") {
-    opfs = saved;
-    diskFolder = true;
-    await readRoot();
-    showFolder(opfs);
+  if (preferIdb()) {
+    await seedIdb();
   } else {
-    await privateRoot();
+    const saved = await loadHandle();
+    if (saved && (await saved.queryPermission({ mode: "readwrite" })) === "granted") {
+      opfs = saved;
+      diskFolder = true;
+      await readRoot();
+      showFolder(opfs);
+    } else {
+      await privateRoot();
+    }
   }
 } catch (err) {
   try {
     await privateRoot();
   } catch (err2) {
-    write("File storage is unavailable in this window. Files last until you close it.\n", "err");
+    try {
+      await seedIdb();
+      write("Private copies stay in this browser.\n");
+    } catch (err3) {
+      write("Private storage is unavailable in this window.\n", "err");
+    }
   }
 }
 
@@ -1352,18 +1880,17 @@ showNone();
 
 document.querySelector("#load").addEventListener("click", () => loadFile(false));
 document.querySelector("#restart").addEventListener("click", () => loadFile(true));
-document.querySelector("#close-file").addEventListener("click", () => {
-  if (currentTab()) {
-    closeTab(currentId);
-  }
-});
 document.querySelector("#save").addEventListener("click", () => {
   const tab = currentTab();
   if (tab && bufferOf(tab) !== tab.saved) {
     saveDirty(tab);
   }
 });
-document.querySelector("#leave-view").addEventListener("click", leaveView);
+document.querySelector("#leave-view").addEventListener("click", () => makeEditable(currentTab()));
+document.querySelector("#toggle-readonly").addEventListener("click", () => {
+  setMenu(false);
+  toggleReadOnly();
+});
 document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "s") {
     event.preventDefault();
@@ -1373,9 +1900,18 @@ document.addEventListener("keydown", (event) => {
     }
   }
 });
-document.querySelector("#new-file").addEventListener("click", () => {
+document.querySelector("#new-file").addEventListener("click", async () => {
+  if (listSource !== "private") {
+    await setListSource("private");
+  }
   newUntitled();
 });
+document.querySelector("#share-file").addEventListener("click", () => {
+  shareCurrent();
+});
+privateBtn.addEventListener("click", () => setListSource("private"));
+resourcesBtn.addEventListener("click", () => setListSource("resources"));
+paintSourceSwitch();
 nameForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const path = nameInput.value.trim().replace(/^\/+/, "");
@@ -1418,6 +1954,14 @@ editor.addEventListener("keydown", (event) => {
       return;
     }
     if (!askingEdit) {
+      const tab = currentTab();
+      if (tab && tab.shared) {
+        askingEdit = true;
+        makeEditable(tab).finally(() => {
+          askingEdit = false;
+        });
+        return;
+      }
       askingEdit = true;
       const yes = window.confirm("This file is in view mode. Switch to Edit?");
       askingEdit = false;

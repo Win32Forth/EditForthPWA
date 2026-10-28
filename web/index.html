@@ -150,6 +150,10 @@
       padding: 8px;
       border-bottom: 1px solid #d0d0d0;
     }
+    #source-switch button[aria-pressed="true"] {
+      background: #111111;
+      color: #ffffff;
+    }
     #name-form { padding: 8px; border-bottom: 1px solid #d0d0d0; }
     #name-input {
       width: 100%;
@@ -178,7 +182,17 @@
       cursor: pointer;
     }
     #listing button.active { background: #e8e8e8; }
+    #listing button.locked { color: #555555; }
     #listing .dir { color: #444444; padding: 4px 8px; }
+    #list-note {
+      margin: 0;
+      padding: 6px 10px 0;
+      color: #555555;
+      font-size: 13px;
+    }
+    #list-note[hidden] { display: none; }
+    #show-resources { line-height: 1.15; text-align: left; }
+    #show-resources .hint { display: block; font-size: 11px; font-weight: normal; }
     #edit {
       flex: 1;
       min-width: 0;
@@ -393,6 +407,7 @@
       <div id="menu-panel" role="menu" hidden>
         <button id="open-folder" type="button" role="menuitem">Open Folder</button>
         <button id="show-boot" type="button" role="menuitem">Show boot messages</button>
+        <button id="toggle-readonly" type="button" role="menuitem" disabled>Read Only</button>
       </div>
     </div>
     <h1>EditForth</h1>
@@ -405,10 +420,15 @@
   </header>
   <div id="workspace">
     <aside id="tree">
+      <div id="source-switch" class="tools" role="group" aria-label="File list">
+        <button id="show-private" type="button" aria-pressed="true" title="Files saved in this browser">Private</button>
+        <button id="show-resources" type="button" aria-pressed="false" title="Read only. These files cannot be changed.">Resources<span class="hint">read only</span></button>
+      </div>
+      <p id="list-note" hidden>Read only. These files cannot be changed.</p>
       <div class="tools">
         <button id="new-file" type="button">New</button>
-        <button id="close-file" type="button" title="Close this tab. You choose whether to save.">Close</button>
-        <button id="save" type="button" title="Save this file. A new file asks for a name. (Cmd+S or Ctrl+S)" disabled>Save</button>
+        <button id="save" type="button" title="Save this file into private storage. A new file asks for a name. (Cmd+S or Ctrl+S)" disabled>Save</button>
+        <button id="share-file" type="button" title="Share this file" disabled>Share</button>
       </div>
       <form id="name-form" hidden>
         <input id="name-input" placeholder="Save as name.fth or lib/name.fth" aria-label="Save as" autocomplete="off" spellcheck="false">
@@ -421,7 +441,7 @@
         <div id="tabs"></div>
         <div id="banner" hidden>
           <strong>View mode</strong>
-          <span>Read-only — typing asks to switch to Edit</span>
+          <span id="banner-note">Read-only — typing asks to switch to Edit</span>
           <span class="spacer"></span>
           <button id="leave-view" type="button">Edit</button>
         </div>
@@ -449,6 +469,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="app.js?v=38"></script>
+  <script type="module" src="app.js?v=44"></script>
 </body>
 </html>
