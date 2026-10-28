@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EditForthPWA</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon-192.png">
+  <meta name="theme-color" content="#ffffff">
+  <style>
+    :root { color-scheme: light; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: #ffffff;
+      color: #111111;
+      font: 15px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-bottom: 1px solid #d0d0d0;
+    }
+    header h1 { font-size: 16px; font-weight: 600; margin: 0; }
+    #where, #folder {
+      color: #444444;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+    }
+    #folder:empty { display: none; }
+    .spacer { flex: 1; }
+    button, input {
+      font: inherit;
+      color: inherit;
+    }
+    header button, .tools button {
+      background: #ffffff;
+      border: 1px solid #b0b0b0;
+      border-radius: 6px;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+    button.primary { background: #111111; color: #ffffff; }
+    button[hidden], form[hidden] { display: none; }
+    #workspace {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: row;
+    }
+    #tree {
+      width: 220px;
+      flex: none;
+      border-right: 1px solid #d0d0d0;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      min-width: 0;
+    }
+    #main {
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .tools {
+      display: flex;
+      gap: 6px;
+      padding: 8px;
+      border-bottom: 1px solid #d0d0d0;
+    }
+    #name-form { padding: 8px; border-bottom: 1px solid #d0d0d0; }
+    #name-input {
+      width: 100%;
+      box-sizing: border-box;
+      background: #ffffff;
+      color: #111111;
+      border: 1px solid #b0b0b0;
+      border-radius: 6px;
+      padding: 6px 8px;
+    }
+    #listing {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding: 6px;
+    }
+    #listing button {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      color: inherit;
+      border: 0;
+      border-radius: 4px;
+      padding: 3px 8px;
+      cursor: pointer;
+    }
+    #listing button.active { background: #e8e8e8; }
+    #listing .dir { color: #444444; padding: 4px 8px; }
+    #edit {
+      flex: 1;
+      min-width: 0;
+      min-height: 120px;
+      display: flex;
+    }
+    #split {
+      flex: none;
+      height: 18px;
+      cursor: ns-resize;
+      touch-action: none;
+      user-select: none;
+      background: #e4e4e4;
+      display: flex;
+      align-items: center;
+    }
+    #split::before {
+      content: "";
+      height: 3px;
+      width: 100%;
+      background: #8e8e8e;
+    }
+    #split:hover,
+    body.resizing #split { background: #d4d4d4; }
+    body.resizing, body.resizing * {
+      cursor: ns-resize;
+      user-select: none;
+    }
+    #editor {
+      flex: 1;
+      min-width: 0;
+      border: 0;
+      resize: none;
+      outline: none;
+      background: #ffffff;
+      color: #111111;
+      padding: 12px 14px;
+      white-space: pre;
+    }
+    #console {
+      flex: none;
+      height: 190px;
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      background: #ffffff;
+    }
+    #log {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding: 8px 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      outline: none;
+      caret-color: #111111;
+    }
+    .err { color: #9b1c1c; }
+    @media (max-width: 700px) {
+      #workspace { flex-direction: column; }
+      #tree {
+        width: auto;
+        height: 150px;
+        border-right: 0;
+        border-bottom: 1px solid #d0d0d0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>EditForth</h1>
+    <span id="folder"></span>
+    <span id="where"></span>
+    <span class="spacer"></span>
+    <button id="open-folder" type="button">Open Folder</button>
+    <button id="load" class="primary" type="button" title="Cmd+Enter or Ctrl+Enter">Load</button>
+    <button id="restart" type="button" title="Fresh image, then load">Restart</button>
+    <button id="install" hidden type="button">Install</button>
+  </header>
+  <div id="workspace">
+    <aside id="tree">
+      <div class="tools">
+        <button id="new-file" type="button">New</button>
+        <button id="delete" type="button">Delete</button>
+      </div>
+      <form id="name-form" hidden>
+        <input id="name-input" placeholder="name.fth or lib/name.fth" aria-label="New file path" autocomplete="off" spellcheck="false">
+      </form>
+      <div id="listing"></div>
+    </aside>
+    <div id="main">
+      <section id="edit">
+        <textarea id="editor" wrap="off" spellcheck="false" autocomplete="off" aria-label="Forth source"></textarea>
+      </section>
+      <div id="split" role="separator" aria-orientation="horizontal" aria-label="Resize console" aria-controls="console" tabindex="0" title="Drag to resize the console"></div>
+      <section id="console">
+        <div id="log" contenteditable="true" spellcheck="false" autocorrect="off" autocapitalize="off" role="textbox" aria-multiline="true" aria-label="Forth console"></div>
+      </section>
+    </div>
+  </div>
+  <script type="module" src="app.js?v=19"></script>
+</body>
+</html>
