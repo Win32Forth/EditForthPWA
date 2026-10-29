@@ -308,6 +308,10 @@ CREATE DBG-MAP-NAME  64 ALLOT
                  addr 2 CELLS + TO addr
                  addr CELL+ lim MAX TO lim
               ELSE
+                 xt FLIT-ADDR = IF
+                    addr 3 CELLS + TO addr
+                    addr CELL+ lim MAX TO lim
+                 ELSE
                  xt DBG-BR-OP? IF
                     addr CELL+ @ addr CELL+ + 2 CELLS + lim MAX TO lim
                     addr 2 CELLS + TO addr
@@ -320,6 +324,7 @@ CREATE DBG-MAP-NAME  64 ALLOT
                        addr CELL+ TO addr
                        addr CELL+ lim MAX TO lim
                     THEN
+                 THEN
                  THEN
               THEN
            THEN
@@ -356,6 +361,18 @@ CREATE DBG-MAP-NAME  64 ALLOT
         cell# ncells < IF  cmap cell# DBG-SLOT-CLEAR  THEN
         cell# 1+ TO cell#
      ELSE
+        xt FLIT-ADDR = IF
+           DBG-K-CALL cmap cell# DBG-SLOT-KIND!
+           xt cmap cell# DBG-SLOT-XT!
+           0 cmap cell# DBG-SLOT-PAY!
+           0 cmap cell# DBG-SLOT-OFF!
+           0 cmap cell# DBG-SLOT-LEN!
+           cell# 1+ TO cell#
+           cell# ncells < IF  cmap cell# DBG-SLOT-CLEAR  THEN
+           cell# 1+ TO cell#
+           cell# ncells < IF  cmap cell# DBG-SLOT-CLEAR  THEN
+           cell# 1+ TO cell#
+        ELSE
         xt DBG-INLINE-STR? IF
            DBG-K-SLIT cmap cell# DBG-SLOT-KIND!
            0 cmap cell# DBG-SLOT-XT!
@@ -385,6 +402,7 @@ CREATE DBG-MAP-NAME  64 ALLOT
               0 cmap cell# DBG-SLOT-LEN!
               cell# 1+ TO cell#
            THEN
+        THEN
         THEN
      THEN
   REPEAT ;

@@ -29,7 +29,7 @@ const DBG_OVER = (2 << 24) | 16;
 const DBG_INTO = (2 << 24) | 17;
 const DBG_OUT = (2 << 24) | 18;
 
-const BANNER = "=== EditForthPWA 0.6.0 === Oct 28, 2026 4:32 PM ===\n";
+const BANNER = "=== EditForthPWA 0.7.0 === Oct 28, 2026 10:56 PM ===\n";
 
 const SEED =
   "\\ Cmd+Enter or Ctrl+Enter loads this file.\n" +

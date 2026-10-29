@@ -2,8 +2,10 @@
 
 #include <ctype.h>
 #include <dirent.h>
+#include <float.h>
 #include <limits.h>
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +21,8 @@
 #define CELL 4
 #define EF_STACK 512
 #define EF_RSTACK 512
+/* ANSValidate ENV-FSTK expects this depth from FLOATING-STACK. */
+#define EF_FSTACK 16
 #define EF_THREADS 16
 #define EF_ORDER_MAX 8
 #define EF_CF 64
@@ -95,6 +99,10 @@ struct ef_vm {
 
     int32_t stack[EF_STACK];
     int sp;
+    /* Separate IEEE double stack. Cells stay 32-bit; a float is 8 bytes. */
+    double fstack[EF_FSTACK];
+    int fsp;
+    int fprec;
     int32_t rstack[EF_RSTACK];
     int rsp;
     int32_t ip;
@@ -149,7 +157,7 @@ struct ef_vm {
     int32_t loop_s[EF_CF];
     int loop_n;
 
-    int32_t xt_exit, xt_lit, xt_branch, xt_zbranch;
+    int32_t xt_exit, xt_lit, xt_flit, xt_branch, xt_zbranch;
     int32_t xt_ef_branch, xt_ef_zbranch;
     int32_t xt_do, xt_qdo, xt_loop, xt_ploop, xt_unloop;
     int32_t xt_dotq, xt_squote, xt_cquote, xt_dotparen, xt_does;
@@ -394,6 +402,28 @@ static int pop(ef_vm *vm, int32_t *out) {
         return fail(vm, -3, "stack underflow\n");
     }
     *out = vm->stack[--vm->sp];
+    return EF_OK;
+}
+
+static int fpush(ef_vm *vm, double v) {
+    if (vm->throw_code) {
+        return EF_THROW;
+    }
+    if (vm->fsp >= EF_FSTACK) {
+        return fail(vm, -44, "float stack overflow\n");
+    }
+    vm->fstack[vm->fsp++] = v;
+    return EF_OK;
+}
+
+static int fpop(ef_vm *vm, double *out) {
+    if (vm->throw_code) {
+        return EF_THROW;
+    }
+    if (vm->fsp <= 0) {
+        return fail(vm, -45, "float stack underflow\n");
+    }
+    *out = vm->fstack[--vm->fsp];
     return EF_OK;
 }
 
@@ -702,6 +732,7 @@ static void unlink_defining(ef_vm *vm) {
 static void recover(ef_vm *vm) {
     unlink_defining(vm);
     vm->sp = 0;
+    vm->fsp = 0;
     vm->rsp = 0;
     vm->ip = 0;
     vm->in_inner = 0;
@@ -919,6 +950,126 @@ static int parse_literal(const char *s, int n, int base, int32_t *lo, int32_t *h
     }
     *hi = (int32_t)(uint32_t)(acc >> 32);
     return 2;
+}
+
+/* Forth-94 >FLOAT. Empty or all blanks is +0. Any other space fails.
+   A bare + or - after the significand is an exponent (1+1 is 10).
+   Conversion is decimal, whatever BASE is. */
+static int is_exp_mark(int c) {
+    return c == 'e' || c == 'E' || c == 'd' || c == 'D';
+}
+
+static int parse_float(const char *s, int n, double *out) {
+    int i = 0;
+    int sign = 0;
+    int digits = 0;
+    int k;
+    int exp_at = -1;
+    int bare = 0;
+    char buf[768];
+    char *end = NULL;
+    double v;
+    if (n < 0 || n > 700) {
+        return 0;
+    }
+    if (n == 0) {
+        *out = 0.0;
+        return 1;
+    }
+    for (k = 0; k < n; k++) {
+        if (!is_white((unsigned char)s[k]) && s[k] != ' ') {
+            break;
+        }
+    }
+    if (k == n) {
+        *out = 0.0;
+        return 1;
+    }
+    for (k = 0; k < n; k++) {
+        if (s[k] == ' ' || s[k] == '\t' || s[k] == '\n' || s[k] == '\r') {
+            return 0;
+        }
+    }
+    if (s[i] == '+' || s[i] == '-') {
+        sign = (s[i] == '-') ? -1 : 1;
+        i++;
+    }
+    while (i < n && s[i] >= '0' && s[i] <= '9') {
+        digits++;
+        i++;
+    }
+    if (i < n && s[i] == '.') {
+        i++;
+        while (i < n && s[i] >= '0' && s[i] <= '9') {
+            digits++;
+            i++;
+        }
+    }
+    if (!digits) {
+        return 0;
+    }
+    if (i < n && is_exp_mark((unsigned char)s[i])) {
+        exp_at = i;
+        i++;
+        if (i < n && (s[i] == '+' || s[i] == '-')) {
+            i++;
+        }
+        while (i < n && s[i] >= '0' && s[i] <= '9') {
+            i++;
+        }
+        if (i != n) {
+            return 0;
+        }
+    } else if (i < n && (s[i] == '+' || s[i] == '-')) {
+        int ed = 0;
+        bare = 1;
+        exp_at = i;
+        i++;
+        while (i < n && s[i] >= '0' && s[i] <= '9') {
+            ed++;
+            i++;
+        }
+        if (!ed || i != n) {
+            return 0;
+        }
+    } else if (i != n) {
+        return 0;
+    }
+    k = 0;
+    if (bare) {
+        memcpy(buf, s, (size_t)exp_at);
+        k = exp_at;
+        buf[k++] = 'e';
+        memcpy(buf + k, s + exp_at, (size_t)(n - exp_at));
+        k += n - exp_at;
+        buf[k] = 0;
+    } else if (exp_at >= 0) {
+        int j;
+        for (j = 0; j < n; j++) {
+            char c = s[j];
+            if (c == 'd' || c == 'D' || c == 'E') {
+                c = 'e';
+            }
+            buf[k++] = c;
+        }
+        if (buf[k - 1] == 'e' || buf[k - 1] == '+' || buf[k - 1] == '-') {
+            buf[k++] = '0';
+        }
+        buf[k] = 0;
+    } else {
+        memcpy(buf, s, (size_t)n);
+        buf[n] = 0;
+    }
+    errno = 0;
+    v = strtod(buf, &end);
+    if (!end || end == buf || *end) {
+        return 0;
+    }
+    if (v == 0.0 && sign < 0) {
+        v = copysign(0.0, -1.0);
+    }
+    *out = v;
+    return 1;
 }
 
 static int plant_string(ef_vm *vm, const char *s, int n, int32_t *char_addr) {
@@ -1761,11 +1912,6 @@ static int p_environment(ef_vm *vm) {
         { "MAX-U", 1, -1 },
         { "RETURN-STACK-CELLS", 1, EF_RSTACK },
         { "STACK-CELLS", 1, EF_STACK },
-        /* Float words are not in this build. The query is known and false. */
-        { "FLOATING", 1, 0 },
-        { "FLOAT-EXT", 1, 0 },
-        { "FLOATING-STACK", 1, 0 },
-        { "MAX-FLOAT", 1, 0 },
         { "STRING", 1, -1 },
         { "FACILITY", 1, -1 },
         { "FACILITY-EXT", 1, -1 },
@@ -1798,6 +1944,23 @@ static int p_environment(ef_vm *vm) {
         memcpy(q, vm->base + addr, (size_t)u);
     }
     q[u] = 0;
+    /* FLOATING and FLOAT-EXT are flags. FLOATING-STACK is the depth.
+       MAX-FLOAT pushes the value on the float stack, then the found flag. */
+    if (u == 8 && memcmp(q, "FLOATING", 8) == 0) {
+        return push(vm, -1) || push(vm, -1) ? EF_THROW : EF_OK;
+    }
+    if (u == 9 && memcmp(q, "FLOAT-EXT", 9) == 0) {
+        return push(vm, -1) || push(vm, -1) ? EF_THROW : EF_OK;
+    }
+    if (u == 14 && memcmp(q, "FLOATING-STACK", 14) == 0) {
+        return push(vm, EF_FSTACK) || push(vm, -1) ? EF_THROW : EF_OK;
+    }
+    if (u == 9 && memcmp(q, "MAX-FLOAT", 9) == 0) {
+        if (fpush(vm, DBL_MAX)) {
+            return EF_THROW;
+        }
+        return push(vm, -1);
+    }
     for (i = 0; i < sizeof tab / sizeof tab[0]; i++) {
         if ((int)strlen(tab[i].name) != u || memcmp(tab[i].name, q, (size_t)u) != 0) {
             continue;
@@ -3047,6 +3210,11 @@ static int p_see(ef_vm *vm) {
             emit_int(vm, v, base_of(vm), 1);
             continue;
         }
+        if (xt == vm->xt_flit) {
+            ip += 2 * CELL;
+            emit_str(vm, "FLIT ");
+            continue;
+        }
         if (xt == vm->xt_dotq || xt == vm->xt_squote || xt == vm->xt_cquote) {
             int sn = vm->base[ip];
             int i;
@@ -3726,13 +3894,38 @@ static int interpret(ef_vm *vm) {
         } else {
             int32_t num, hi = 0;
             int kind = parse_literal(name, n, base_of(vm), &num, &hi);
+            double fval = 0.0;
+            int is_float = 0;
             if (!kind) {
+                int ei;
+                for (ei = 0; ei < n; ei++) {
+                    if (is_exp_mark((unsigned char)name[ei])) {
+                        is_float = parse_float(name, n, &fval);
+                        break;
+                    }
+                }
+            }
+            if (!kind && !is_float) {
                 emit_str(vm, "undefined: ");
                 emit_str(vm, name);
                 emit_ch(vm, '\n');
                 vm->throw_code = -13;
                 return EF_THROW;
             }
+            if (is_float) {
+                if (compiling) {
+                    uint64_t bits = 0;
+                    memcpy(&bits, &fval, 8);
+                    if (!vm->xt_flit ||
+                        comma(vm, vm->xt_flit) ||
+                        comma(vm, (int32_t)(uint32_t)(bits >> 32)) ||
+                        comma(vm, (int32_t)(uint32_t)bits)) {
+                        return EF_THROW;
+                    }
+                } else if (fpush(vm, fval)) {
+                    return EF_THROW;
+                }
+            } else
             if (kind == 2) {
                 if (compiling) {
                     if (comma(vm, vm->xt_lit) || comma(vm, num) ||
@@ -4653,6 +4846,10 @@ static int dbg_name_ok(ef_vm *vm, int32_t xt) {
 static void dbg_print_inline(ef_vm *vm) {
     int32_t xt = vm->dbg_xt;
     int32_t inl = vm->dbg_inline;
+    if (xt == vm->xt_flit) {
+        emit_str(vm, " FLIT");
+        return;
+    }
     if (xt == vm->xt_lit) {
         emit_ch(vm, ' ');
         if (dbg_name_ok(vm, inl)) {
@@ -6233,17 +6430,768 @@ static int p_search_wl(ef_vm *vm) {
     return push(vm, 0);
 }
 
+/* REPRESENT: 0.digits * 10^n. Zero has n 0. NaN and Inf fail (flag2 false). */
+static int fp_represent(double r, char *dst, int u, int *n_out, int *neg_out) {
+    char buf[96];
+    char *p;
+    int exp = 0;
+    int nd = 0;
+    int prec;
+    *neg_out = signbit(r) ? 1 : 0;
+    if (u < 1) {
+        *n_out = 0;
+        return 0;
+    }
+    if (!isfinite(r)) {
+        *n_out = 0;
+        return 0;
+    }
+    if (r == 0.0) {
+        memset(dst, '0', (size_t)u);
+        *n_out = 0;
+        return 1;
+    }
+    r = fabs(r);
+    prec = u - 1;
+    if (prec > 40) {
+        prec = 40;
+    }
+    snprintf(buf, sizeof buf, "%.*e", prec, r);
+    p = buf;
+    if (*p == '-') {
+        p++;
+    }
+    if (p[0] < '0' || p[0] > '9' || p[1] != '.') {
+        *n_out = 0;
+        return 0;
+    }
+    dst[nd++] = p[0];
+    p += 2;
+    while (*p && *p != 'e' && *p != 'E' && nd < u) {
+        if (*p >= '0' && *p <= '9') {
+            dst[nd++] = *p;
+        }
+        p++;
+    }
+    while (*p && *p != 'e' && *p != 'E') {
+        p++;
+    }
+    if (*p == 'e' || *p == 'E') {
+        exp = atoi(p + 1);
+    }
+    while (nd < u) {
+        dst[nd++] = '0';
+    }
+    *n_out = exp + 1;
+    return 1;
+}
+
+static int fp_prec(const ef_vm *vm) {
+    int p = vm->fprec;
+    if (p < 1) {
+        return 1;
+    }
+    if (p > 64) {
+        return 64;
+    }
+    return p;
+}
+
+static void emit_zeros(ef_vm *vm, int n) {
+    while (n-- > 0) {
+        emit_ch(vm, '0');
+    }
+}
+
+static void emit_dec_sp(ef_vm *vm, int v) {
+    char b[16];
+    int n = 0;
+    unsigned int u;
+    if (v < 0) {
+        emit_ch(vm, '-');
+        u = (unsigned int)(-v);
+    } else {
+        u = (unsigned int)v;
+    }
+    do {
+        b[n++] = (char)('0' + (u % 10));
+        u /= 10;
+    } while (u && n < (int)sizeof b);
+    while (n > 0) {
+        emit_ch(vm, b[--n]);
+    }
+    emit_ch(vm, ' ');
+}
+
+static void emit_fbad(ef_vm *vm, double r) {
+    if (signbit(r)) {
+        emit_ch(vm, '-');
+    }
+    emit_str(vm, isnan(r) ? "nan " : "inf ");
+}
+
+static int fp_digits(ef_vm *vm, double r, char *digs, int *n, int *neg) {
+    int prec = fp_prec(vm);
+    if (!fp_represent(r, digs, prec, n, neg)) {
+        emit_fbad(vm, r);
+        return 0;
+    }
+    return prec;
+}
+
+/* Gforth f. / fs. / fe. : significand digits, then one trailing space. */
+static void emit_fdot(ef_vm *vm, double r) {
+    char digs[80];
+    int n = 0;
+    int neg = 0;
+    int prec;
+    int i;
+    int skip;
+    int end;
+    prec = fp_digits(vm, r, digs, &n, &neg);
+    if (!prec) {
+        return;
+    }
+    if (neg) {
+        emit_ch(vm, '-');
+    }
+    if (n <= 0) {
+        emit_ch(vm, '0');
+    } else {
+        int take = n < prec ? n : prec;
+        for (i = 0; i < take; i++) {
+            emit_ch(vm, digs[i]);
+        }
+        emit_zeros(vm, n - prec);
+    }
+    emit_ch(vm, '.');
+    if (n < 0) {
+        emit_zeros(vm, -n);
+    }
+    skip = n > 0 ? n : 0;
+    end = prec;
+    while (end > skip && digs[end - 1] == '0') {
+        end--;
+    }
+    for (i = skip; i < end; i++) {
+        emit_ch(vm, digs[i]);
+    }
+    emit_ch(vm, ' ');
+}
+
+static void emit_fs(ef_vm *vm, double r) {
+    char digs[80];
+    int n = 0;
+    int neg = 0;
+    int prec;
+    int i;
+    prec = fp_digits(vm, r, digs, &n, &neg);
+    if (!prec) {
+        return;
+    }
+    if (neg) {
+        emit_ch(vm, '-');
+    }
+    emit_ch(vm, digs[0]);
+    emit_ch(vm, '.');
+    for (i = 1; i < prec; i++) {
+        emit_ch(vm, digs[i]);
+    }
+    emit_ch(vm, 'E');
+    emit_dec_sp(vm, n - 1);
+}
+
+static void emit_fe(ef_vm *vm, double r) {
+    char digs[80];
+    int n = 0;
+    int neg = 0;
+    int prec;
+    int exp;
+    int quot;
+    int rem;
+    int before;
+    int typed;
+    int i;
+    prec = fp_digits(vm, r, digs, &n, &neg);
+    if (!prec) {
+        return;
+    }
+    exp = n - 1;
+    quot = exp / 3;
+    rem = exp % 3;
+    if (rem < 0) {
+        rem += 3;
+        quot--;
+    }
+    before = rem + 1;
+    if (neg) {
+        emit_ch(vm, '-');
+    }
+    typed = before < prec ? before : prec;
+    for (i = 0; i < typed; i++) {
+        emit_ch(vm, digs[i]);
+    }
+    emit_zeros(vm, before - prec);
+    emit_ch(vm, '.');
+    if (before < prec) {
+        for (i = before; i < prec; i++) {
+            emit_ch(vm, digs[i]);
+        }
+    }
+    emit_ch(vm, 'E');
+    emit_dec_sp(vm, quot * 3);
+}
+
+/* Nearest integer, ties toward +infinity. A zero result keeps the sign of r. */
+static double f_round_neg(double r) {
+    double q;
+    if (!isfinite(r)) {
+        return r;
+    }
+    q = floor(r + 0.5);
+    if (q == 0.0 && signbit(r)) {
+        return -0.0;
+    }
+    return q;
+}
+
+static int f_trunc_i64(double r, int64_t *out) {
+    double q;
+    if (!isfinite(r)) {
+        return 0;
+    }
+    q = trunc(r);
+    if (q >= 9223372036854775808.0 || q < -9223372036854775808.0) {
+        return 0;
+    }
+    *out = (int64_t)q;
+    return 1;
+}
+
+static int f_flag(ef_vm *vm, int cond) {
+    return push(vm, cond ? -1 : 0);
+}
+
+static int fp_fetch(ef_vm *vm, int32_t addr, int n) {
+    double d;
+    if (!span_ok(vm, addr, n)) {
+        return fail(vm, -16, "bad address\n");
+    }
+    if (n == 4) {
+        float f;
+        memcpy(&f, vm->base + addr, 4);
+        d = (double)f;
+    } else {
+        memcpy(&d, vm->base + addr, 8);
+    }
+    return fpush(vm, d);
+}
+
+static int fp_store(ef_vm *vm, int32_t addr, int n) {
+    double d;
+    if (fpop(vm, &d)) {
+        return EF_THROW;
+    }
+    if (!span_ok(vm, addr, n)) {
+        return fail(vm, -16, "bad address\n");
+    }
+    if (n == 4) {
+        float f = (float)d;
+        memcpy(vm->base + addr, &f, 4);
+    } else {
+        memcpy(vm->base + addr, &d, 8);
+    }
+    return EF_OK;
+}
+
+static int32_t align_up(int32_t addr, int32_t m) {
+    uint32_t u = (uint32_t)addr;
+    uint32_t mask = (uint32_t)m - 1u;
+    return (int32_t)((u + mask) & ~mask);
+}
+
+/* r3>0 absolute, r3=0 same bits (+0 and -0 differ), r3<0 relative. A NaN r3 is false. */
+static int f_same_bits(double a, double b) {
+    uint64_t ua, ub;
+    memcpy(&ua, &a, sizeof ua);
+    memcpy(&ub, &b, sizeof ub);
+    return ua == ub;
+}
+
+static int f_prox(double r1, double r2, double r3) {
+    if (r3 > 0.0) {
+        return !isnan(r1) && !isnan(r2) && fabs(r1 - r2) < r3;
+    }
+    if (r3 < 0.0) {
+        return !isnan(r1) && !isnan(r2) &&
+               fabs(r1 - r2) < fabs(r3) * (fabs(r1) + fabs(r2));
+    }
+    if (r3 == 0.0) {
+        return f_same_bits(r1, r2);
+    }
+    return 0;
+}
+
 static int p_fop(ef_vm *vm) {
     int32_t op;
+    double a, b, c;
     if (pop(vm, &op)) {
         return EF_THROW;
     }
-    (void)op;
-    return fail(vm, -21, "floats are not in this build\n");
+    switch (op) {
+    case 1:
+        return push(vm, vm->fsp);
+    case 2:
+        return fpop(vm, &a);
+    case 3:
+        if (fpop(vm, &a) || fpush(vm, a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, a);
+    case 4:
+        if (fpop(vm, &b) || fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, b) || fpush(vm, a) ? EF_THROW : EF_OK;
+    case 5:
+        if (vm->fsp < 2) {
+            return fail(vm, -45, "float stack underflow\n");
+        }
+        return fpush(vm, vm->fstack[vm->fsp - 2]);
+    case 6:
+        if (fpop(vm, &c) || fpop(vm, &b) || fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, b) || fpush(vm, c) || fpush(vm, a) ? EF_THROW : EF_OK;
+    case 7:
+        if (fpop(vm, &b) || fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, a + b);
+    case 8:
+        if (fpop(vm, &b) || fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, a - b);
+    case 9:
+        if (fpop(vm, &b) || fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, a * b);
+    case 10:
+        if (fpop(vm, &b) || fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, a / b);
+    case 11:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, -a);
+    case 12:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, fabs(a));
+    case 13:
+        if (fpop(vm, &b) || fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, fmax(a, b));
+    case 14:
+        if (fpop(vm, &b) || fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, fmin(a, b));
+    case 15:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return f_flag(vm, a == 0.0);
+    case 16:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return f_flag(vm, a < 0.0);
+    case 17:
+        if (fpop(vm, &b) || fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return f_flag(vm, a < b);
+    case 18:
+        if (fpop(vm, &b) || fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return f_flag(vm, a > b);
+    case 19:
+        if (fpop(vm, &b) || fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return f_flag(vm, a == b);
+    case 20:
+        if (fpop(vm, &b) || fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return f_flag(vm, a != b);
+    case 21:
+        if (fpop(vm, &c) || fpop(vm, &b) || fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return f_flag(vm, f_prox(a, b, c));
+    case 22:
+    case 26: {
+        int32_t addr;
+        if (pop(vm, &addr)) {
+            return EF_THROW;
+        }
+        return fp_fetch(vm, addr, 8);
+    }
+    case 23:
+    case 27: {
+        int32_t addr;
+        if (pop(vm, &addr)) {
+            return EF_THROW;
+        }
+        return fp_store(vm, addr, 8);
+    }
+    case 24: {
+        int32_t addr;
+        if (pop(vm, &addr)) {
+            return EF_THROW;
+        }
+        return fp_fetch(vm, addr, 4);
+    }
+    case 25: {
+        int32_t addr;
+        if (pop(vm, &addr)) {
+            return EF_THROW;
+        }
+        return fp_store(vm, addr, 4);
+    }
+    case 28: {
+        int32_t n;
+        if (pop(vm, &n)) {
+            return EF_THROW;
+        }
+        return fpush(vm, (double)n);
+    }
+    case 29: {
+        int64_t q;
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        if (!f_trunc_i64(a, &q) || q > 2147483647LL || q < -2147483648LL) {
+            return fail(vm, -44, "float out of range\n");
+        }
+        return push(vm, (int32_t)q);
+    }
+    case 30: {
+        int32_t hi, lo;
+        if (pop(vm, &hi) || pop(vm, &lo)) {
+            return EF_THROW;
+        }
+        return fpush(vm, (double)(int64_t)pack_d(lo, hi));
+    }
+    case 31: {
+        int64_t q;
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        if (!f_trunc_i64(a, &q)) {
+            return fail(vm, -44, "float out of range\n");
+        }
+        return push_d(vm, (uint64_t)q);
+    }
+    case 32: {
+        int32_t u, addr;
+        double v = 0.0;
+        char tmp[768];
+        if (pop(vm, &u) || pop(vm, &addr)) {
+            return EF_THROW;
+        }
+        if (u < 0 || u >= (int)sizeof tmp || !span_ok(vm, addr, u > 0 ? u : 0)) {
+            return fail(vm, -16, "bad address\n");
+        }
+        if (u > 0) {
+            memcpy(tmp, vm->base + addr, (size_t)u);
+        }
+        if (!parse_float(tmp, u, &v)) {
+            return push(vm, 0);
+        }
+        if (fpush(vm, v)) {
+            return EF_THROW;
+        }
+        return push(vm, -1);
+    }
+    case 33:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        emit_fdot(vm, a);
+        return EF_OK;
+    case 34:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        emit_fs(vm, a);
+        return EF_OK;
+    case 35:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        emit_fe(vm, a);
+        return EF_OK;
+    case 36:
+        return push(vm, vm->fprec > 0 ? vm->fprec : 15);
+    case 37: {
+        int32_t u;
+        if (pop(vm, &u)) {
+            return EF_THROW;
+        }
+        if (u < 1) {
+            u = 1;
+        }
+        if (u > 64) {
+            u = 64;
+        }
+        vm->fprec = u;
+        return EF_OK;
+    }
+    case 38: {
+        int32_t u, addr;
+        int n = 0;
+        int neg = 0;
+        int ok;
+        char digs[256];
+        if (pop(vm, &u) || pop(vm, &addr)) {
+            return EF_THROW;
+        }
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        if (u < 1 || !span_ok(vm, addr, u)) {
+            return fail(vm, -16, "bad address\n");
+        }
+        if (u <= (int)sizeof digs) {
+            ok = fp_represent(a, digs, u, &n, &neg);
+            if (ok) {
+                memcpy(vm->base + addr, digs, (size_t)u);
+            }
+        } else {
+            ok = fp_represent(a, digs, (int)sizeof digs, &n, &neg);
+            if (ok) {
+                memcpy(vm->base + addr, digs, sizeof digs);
+                memset(vm->base + addr + sizeof digs, '0', (size_t)u - sizeof digs);
+            }
+        }
+        if (!ok) {
+            n = 0;
+        }
+        return push(vm, n) || push(vm, neg ? -1 : 0) || push(vm, ok ? -1 : 0)
+                   ? EF_THROW
+                   : EF_OK;
+    }
+    case 39:
+    case 43: {
+        int32_t n;
+        if (pop(vm, &n)) {
+            return EF_THROW;
+        }
+        return push(vm, n * 8);
+    }
+    case 40:
+    case 44: {
+        int32_t n;
+        if (pop(vm, &n)) {
+            return EF_THROW;
+        }
+        return push(vm, n + 8);
+    }
+    case 41: {
+        int32_t n;
+        if (pop(vm, &n)) {
+            return EF_THROW;
+        }
+        return push(vm, n * 4);
+    }
+    case 42: {
+        int32_t n;
+        if (pop(vm, &n)) {
+            return EF_THROW;
+        }
+        return push(vm, n + 4);
+    }
+    case 45:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, sqrt(a));
+    case 46:
+        if (fpop(vm, &b) || fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, pow(a, b));
+    case 47:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, exp(a));
+    case 48:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, expm1(a));
+    case 49:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, log(a));
+    case 50:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, log1p(a));
+    case 51:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, log10(a));
+    case 52:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, pow(10.0, a));
+    case 53:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, sin(a));
+    case 54:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, cos(a));
+    case 55:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, tan(a));
+    case 56:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, asin(a));
+    case 57:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, acos(a));
+    case 58:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, atan(a));
+    case 59:
+        if (fpop(vm, &b) || fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, atan2(a, b));
+    case 60:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, sin(a)) || fpush(vm, cos(a)) ? EF_THROW : EF_OK;
+    case 61:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, sinh(a));
+    case 62:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, cosh(a));
+    case 63:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, tanh(a));
+    case 64:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, asinh(a));
+    case 65:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, acosh(a));
+    case 66:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, atanh(a));
+    case 67:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, floor(a));
+    case 68:
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, f_round_neg(a));
+    case 69:
+        if (fpop(vm, &b) || fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        return fpush(vm, a - b * floor(a / b));
+    case 73:
+    case 75: {
+        int32_t addr;
+        if (pop(vm, &addr)) {
+            return EF_THROW;
+        }
+        return push(vm, align_up(addr, 8));
+    }
+    case 74: {
+        int32_t addr;
+        if (pop(vm, &addr)) {
+            return EF_THROW;
+        }
+        return push(vm, align_up(addr, 4));
+    }
+    case 102: {
+        uint64_t bits = 0;
+        if (fpop(vm, &a)) {
+            return EF_THROW;
+        }
+        memcpy(&bits, &a, 8);
+        if (push(vm, (int32_t)(uint32_t)bits)) {
+            return EF_THROW;
+        }
+        return push(vm, (int32_t)(uint32_t)(bits >> 32));
+    }
+    default:
+        return fail(vm, -21, "unsupported float op\n");
+    }
 }
 
 static int p_flit(ef_vm *vm) {
-    return fail(vm, -21, "floats are not in this build\n");
+    int32_t hi, lo;
+    uint64_t bits;
+    double d;
+    if (load_cell(vm, vm->ip, &hi)) {
+        return EF_THROW;
+    }
+    vm->ip += CELL;
+    if (load_cell(vm, vm->ip, &lo)) {
+        return EF_THROW;
+    }
+    vm->ip += CELL;
+    bits = ((uint64_t)(uint32_t)hi << 32) | (uint32_t)lo;
+    memcpy(&d, &bits, 8);
+    return fpush(vm, d);
 }
 
 static int p_textedit(ef_vm *vm) {
@@ -7964,6 +8912,7 @@ static const struct {
 static void note_special(ef_vm *vm, const char *name, int32_t cfa) {
     if (strcmp(name, "EXIT") == 0) vm->xt_exit = cfa;
     else if (strcmp(name, "LIT") == 0) vm->xt_lit = cfa;
+    else if (strcmp(name, "FLIT") == 0) vm->xt_flit = cfa;
     else if (strcmp(name, "BRANCH") == 0) vm->xt_branch = cfa;
     else if (strcmp(name, "0BRANCH") == 0) vm->xt_zbranch = cfa;
     else if (strcmp(name, "(EF-BRANCH)") == 0) vm->xt_ef_branch = cfa;
@@ -8112,6 +9061,7 @@ ef_vm *ef_create(void) {
     uv_set(vm, UV_ORDER, FORTH_WID);
     uv_set(vm, UV_BLOCK_NR, -1);
     vm->load_blk = -1;
+    vm->fprec = 15;
     vm->heap_at = HEAP_ORIGIN;
     vm->dbg_over = -1;
     vm->dbg_out = -1;

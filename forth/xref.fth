@@ -214,6 +214,8 @@ VARIABLE XREF-VOC-FOUND   \ true once .WID-NAME printed a VOCABULARY name
     DUP @ EXIT-ADDR = IF DROP FALSE EXIT THEN
     DUP @ LIT-ADDR = IF
       CELL+ CELL+
+    ELSE DUP @ FLIT-ADDR = IF
+      CELL+ CELL+ CELL+
     ELSE DUP @ SLIT-ADDR = OVER @ ['] (.") = OR OVER @ ['] (C") = OR IF
       \ (S") and (.") store a counted byte, then chars, then ALIGN.
       CELL+ DUP C@ >R CHAR+ R> + ALIGNED
@@ -222,7 +224,7 @@ VARIABLE XREF-VOC-FOUND   \ true once .WID-NAME printed a VOCABULARY name
     ELSE
       DUP @ XREF-XT @ = IF DROP TRUE EXIT THEN
       CELL+
-    THEN THEN THEN
+    THEN THEN THEN THEN
   AGAIN
 ;
 

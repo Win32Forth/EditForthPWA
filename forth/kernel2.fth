@@ -126,6 +126,7 @@ DOC" (SEE-STEP) ( addr -- addr' ) decompile one body cell; advances addr"
   DUP @ >R
   R@ EXIT-ADDR = IF R> DROP DROP 59 EMIT CR 0 EXIT THEN
   R@ LIT-ADDR = IF R> DROP CELL+ DUP @ . SPACE CELL+ EXIT THEN
+  R@ FLIT-ADDR = IF R> DROP CELL+ CELL+ CELL+ S" FLIT " TYPE EXIT THEN
   R@ SLIT-ADDR = IF R> DROP DUP C@ >R CHAR+ 83 EMIT 34 EMIT SPACE DUP R@ TYPE 34 EMIT SPACE R> + ALIGNED EXIT THEN
   R@ ['] (C") = IF R> DROP CELL+ DUP C@ >R CHAR+ 67 EMIT 34 EMIT SPACE DUP R@ TYPE 34 EMIT SPACE R> + ALIGNED EXIT THEN
   R@ (SEE-BR?) IF R@ NAME>STRING TYPE SPACE R> DROP CELL+ DUP @ . SPACE CELL+ EXIT THEN
@@ -755,7 +756,8 @@ DOC" FCONSTANT ( F: r 'name' -- ) create a float constant"
 DOC" FVALUE ( F: r 'name' -- ) create a float value; change with TO"
 : FVALUE CREATE F, DOES> F@ ;
 DOC" FLITERAL ( F: r -- ) compile float literal (immediate)"
-: FLITERAL 102 (F-OP) FLIT-ADDR , , ; IMMEDIATE
+\ 32-bit cells: (F-OP) 102 leaves lo under hi, then FLIT-ADDR. Three commas.
+: FLITERAL 102 (F-OP) FLIT-ADDR , , , ; IMMEDIATE
 ONLY FORTH DEFINITIONS
 
 \ --- Extended-Character word set (ANS 18, UTF-8) ---

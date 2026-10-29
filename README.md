@@ -1,8 +1,8 @@
 # EditForthPWA
 
-A 32-bit EditForth that runs in the browser. This release is 0.6.0. Cells are 4 bytes. The engine is C (`kernel/ef32.c`), compiled with `emcc` to WebAssembly. The page is the editor: a file tree, the source being edited, and a Forth console under it.
+A 32-bit EditForth that runs in the browser. This release is 0.7.0. Cells are 4 bytes. The engine is C (`kernel/ef32.c`), compiled with `emcc` to WebAssembly. The page is the editor: a file tree, the source being edited, and a Forth console under it.
 
-This folder is not an Xcode project. EditForth, EditForthWin, EditForthLin, and TZEditForth stay as they are. This tree does not write their document folders. Ask Forth is not part of this port.
+This folder is not an Xcode project. EditForth, EditForthWin, EditForthLin, and TZEditForth stay as they are. This tree does not write their document folders.
 
 ## Run
 
@@ -42,7 +42,7 @@ The window is white (`#ffffff`) with black text (`#111111`). Include is a black 
 
 The bar between the source and the console drags. Dragging up gives the console more room. The height is remembered (`editforth.consoleHeight`). The console stays under the source. There is no undock. The bar on the right of the file list drags sideways. The list starts at 220px, and the width is remembered (`editforth.treeWidth`). Save sits with New and Share. Close is the tab’s own button.
 
-The console starts with `=== EditForthPWA 0.6.0 === Oct 28, 2026 4:32 PM ===`. `CLS` clears back to that line and the prompt. The Forth command line is the tail of the console text, on the line under the last output. The prompt is `ok(n)> `, with a trailing space. `n` is how many values are on the data stack. Return runs that tail. The output follows, and a new prompt is drawn in the same text. Up and Down recall earlier lines into that tail. An unknown name prints `undefined: NAME`, then `file:line`, then `throw -13`, in red, and the editor selects that line.
+The console starts with `=== EditForthPWA 0.7.0 === Oct 28, 2026 10:56 PM ===`. `CLS` clears back to that line and the prompt. The Forth command line is the tail of the console text, on the line under the last output. The prompt is `ok(n)> `, with a trailing space. `n` is how many values are on the data stack. Return runs that tail. The output follows, and a new prompt is drawn in the same text. Up and Down recall earlier lines into that tail. An unknown name prints `undefined: NAME`, then `file:line`, then `throw -13`, in red, and the editor selects that line.
 
 `KEY` and `EKEY` wait for the next key typed in the console. `KEY` returns the low 8 bits. `EKEY` returns the whole cell, so F6, F7, and F8 keep their tags. There is no canvas yet, so `GRAPHICS` words do not open a window.
 
@@ -90,7 +90,7 @@ Boot embeds the files in `forth/`, in this order:
 
 The body of a word is at CFA+8. `IMM` is bit 31 of the flag cell at CFA−4. The layout words (`CELL+`, `>BODY`, `>LINK`, `>FLAGS`, `VIEW-LINE`, `VIEW-FILE#`) match this header.
 
-`(APP-OPEN)` returns ior 0. `(APP-KEY)` returns 0 so `KEY` in `GRAPHICS` does not spin. `(APP-CBLIT)` and `(APP-PBLIT)` drop the pixel buffer. `ALSO GRAPHICS` or `ALSO SYSVOC` finds the names `vocsys.fth` moved. `(F-OP)` stays in `EMITTER`. `SOURCE` is the current input span. `REF IF` reports that the word is immediate. A name that is not defined throws −13. `KEY?` is false here, so the Space pause in `REF` does not wait. A float in `kernel2.fth` is still 8 bytes. `{: … :}` locals and `LOCALS|` are in this build. `2R@` copies the top two return-stack cells and leaves them there. `2!` stores the low cell at the address and the high cell in the next cell. `SAVE-INPUT` and `RESTORE-INPUT` save the place in the current source. On a file that is the line. On a block it includes the block number. Inside `EVALUATE` it is only `>IN`. `WORDS` prints `--- NAME (n) ---`, then the names in the first wordlist, in the current base. An optional filter is matched and not executed. `TEXTEDIT` and the boot-word table are stubs. Float words are in `FLOATING`. `(F-OP)` and `FLIT` throw −21, and `ENVIRONMENT?` reports `FLOATING` as known and false.
+`(APP-OPEN)` returns ior 0. `(APP-KEY)` returns 0 so `KEY` in `GRAPHICS` does not spin. `(APP-CBLIT)` and `(APP-PBLIT)` drop the pixel buffer. `ALSO GRAPHICS` or `ALSO SYSVOC` finds the names `vocsys.fth` moved. `(F-OP)` stays in `EMITTER`. `SOURCE` is the current input span. `REF IF` reports that the word is immediate. A name that is not defined throws −13. `KEY?` is false here, so the Space pause in `REF` does not wait. A float in `kernel2.fth` is still 8 bytes. `{: … :}` locals and `LOCALS|` are in this build. `2R@` copies the top two return-stack cells and leaves them there. `2!` stores the low cell at the address and the high cell in the next cell. `SAVE-INPUT` and `RESTORE-INPUT` save the place in the current source. On a file that is the line. On a block it includes the block number. Inside `EVALUATE` it is only `>IN`. `WORDS` prints `--- NAME (n) ---`, then the names in the first wordlist, in the current base. An optional filter is matched and not executed. `TEXTEDIT` and the boot-word table are stubs. Float words are in `FLOATING` and run on a separate stack of 16 IEEE doubles. `ENVIRONMENT?` reports `FLOATING` and `FLOAT-EXT` as true, `FLOATING-STACK` as 16, and `MAX-FLOAT` as the largest finite double. A decimal token that contains `e`, `E`, `d`, or `D` is a float. In hex, `0e` is still an integer.
 
 `BRANCH` and `0BRANCH` store the destination minus the cell after the offset. `(EF-BRANCH)` and `(EF-0BRANCH)` use the other form: the instruction pointer becomes the offset cell plus the stored offset.
 
@@ -100,8 +100,8 @@ The body of a word is at CFA+8. `IMM` is bit 31 of the flag cell at CFA−4. The
 
 `VIEW name` prints the stamped `path:line` and opens that line in view mode. Command-click does the same for the word under the pointer, in the editor or in the console. A name printed by `WORDS` is one of those words. Off a Mac, Ctrl-click is the same gesture. A C primitive such as `DUP` opens `Resources/Library/Sources/ef32.c` at its function. `make` copies `kernel/ef32.c` and `kernel/ef32.h` into that folder so the file tree and `VIEW` use the same files. A name with no file prints `(no source)` and leaves the editor alone. An unknown name prints `undefined: name`.
 
-`FROMLIB FLOAD Testing/HayesTest/HayesTest.fth` runs the suite. After the core `ACCEPT` line, Core through the Block word set finish with an empty error count. `LOAD` reads a block as 16 lines of 64 characters, and one buffer is enough for that suite. The floating-point section opens `src/fp/ttester.fs` and then throws −21 from `runfptests.fth`.
+`FROMLIB FLOAD Testing/HayesTest/HayesTest.fth` runs the suite. After the core `ACCEPT` line, every section counter is 0 and the run prints `HAYES: ALL COUNTS ZERO — PASS`. `LOAD` reads a block as 16 lines of 64 characters, and one buffer is enough for that suite. The floating-point section runs in decimal. `FROMLIB FLOAD Testing/ANSValidate/ANS-VALIDATE.fth` finishes with no error.
 
 ## Not running yet
 
-Canvas graphics and `EMIT-APP` are not wired up. Floating-point execution is the stub above.
+Canvas graphics and `EMIT-APP` are not wired up.
