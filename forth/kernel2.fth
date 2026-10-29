@@ -75,8 +75,8 @@ DOC" CEQUAL ( c-addr1 u1 c-addr2 u2 -- flag ) true if equal, ignoring a-z case"
         1+ SWAP 1+ SWAP
     LOOP
     2DROP TRUE ;
-\ S" name" on this engine keeps the blank after the quote.
-DOC" (S-BL) ( c-addr u -- c-addr' u' ) drop one leading blank kept by S-quote"
+\ S" drops the first blank and keeps any further blanks. (S-BL) drops one more.
+DOC" (S-BL) ( c-addr u -- c-addr' u' ) drop one leading blank if present"
 : (S-BL) ( c-addr u -- c-addr' u' )
   DUP IF OVER C@ BL = IF 1 /STRING THEN THEN ;
 DOC" [ELSE] ( -- ) skip to matching [THEN] (immediate)"
@@ -111,7 +111,7 @@ DOC" ALIAS ( xt 'name' -- ) new name executes xt; copies IMMEDIATE"
     R> >FLAGS CELL+ @ 1 31 LSHIFT AND IF IMMEDIATE THEN
     DOES> @ EXECUTE ;
 DOC" SYNONYM ( 'newname' 'oldname' -- ) newname behaves as oldname"
-: SYNONYM >IN @ >R PARSE-NAME 2DROP ' R> >IN ! ALIAS ;
+: SYNONYM >IN @ >R PARSE-NAME 2DROP ' R> >IN ! ALIAS PARSE-NAME 2DROP ;
 
 DOC" (SEE-BR?) ( xt -- flag ) SEE helper: branch/loop xt?"
 : (SEE-BR?) >R R@ BRANCH-ADDR = R@ 0BRANCH-ADDR = OR
@@ -127,6 +127,7 @@ DOC" (SEE-STEP) ( addr -- addr' ) decompile one body cell; advances addr"
   R@ EXIT-ADDR = IF R> DROP DROP 59 EMIT CR 0 EXIT THEN
   R@ LIT-ADDR = IF R> DROP CELL+ DUP @ . SPACE CELL+ EXIT THEN
   R@ SLIT-ADDR = IF R> DROP DUP C@ >R CHAR+ 83 EMIT 34 EMIT SPACE DUP R@ TYPE 34 EMIT SPACE R> + ALIGNED EXIT THEN
+  R@ ['] (C") = IF R> DROP CELL+ DUP C@ >R CHAR+ 67 EMIT 34 EMIT SPACE DUP R@ TYPE 34 EMIT SPACE R> + ALIGNED EXIT THEN
   R@ (SEE-BR?) IF R@ NAME>STRING TYPE SPACE R> DROP CELL+ DUP @ . SPACE CELL+ EXIT THEN
   R@ NAME>STRING TYPE SPACE R> DROP CELL+ ;
 \ SEE / DEBUG / HELP are DEFERs installed after ABORT (DEFER defaults to ABORT).
@@ -415,10 +416,26 @@ VARIABLE (SUBST-CNT) 0 (SUBST-CNT) !
 VARIABLE (SF-I) VARIABLE (SS-I)
 : (SUBST-NAME) ( i -- c-addr ) 32 * (SUBST-NAMES) + ;
 : (SUBST-TEXT) ( i -- c-addr ) 256 * (SUBST-TEXTS) + ;
+: (CUP) ( c -- c ) DUP [CHAR] a [CHAR] z 1+ WITHIN IF BL - THEN ;
+\ Substitution names match without regard to case. COMPARE stays case sensitive.
+: (SUBST-CI=) ( c-addr1 u1 c-addr2 u2 -- flag )
+  ROT OVER <> IF DROP 2DROP FALSE EXIT THEN
+  0 ?DO
+    OVER I + C@ (CUP) OVER I + C@ (CUP) <>
+    IF 2DROP UNLOOP FALSE EXIT THEN
+  LOOP 2DROP TRUE ;
 : (SUBST-FIND) ( c-addr u -- i true | false )
   0 (SF-I) ! BEGIN (SF-I) @ (SUBST-CNT) @ < WHILE
-    2DUP (SF-I) @ (SUBST-NAME) COUNT COMPARE 0= IF 2DROP (SF-I) @ TRUE EXIT THEN
+    2DUP (SF-I) @ (SUBST-NAME) COUNT (SUBST-CI=) IF 2DROP (SF-I) @ TRUE EXIT THEN
     1 (SF-I) +! REPEAT 2DROP FALSE ;
+\ True when the source bytes and the destination capacity share any address.
+: (SS-LAP) ( c1 u1 c2 u2 -- flag )
+  DUP 0= IF 2DROP 2DROP FALSE EXIT THEN
+  2 PICK 0= IF 2DROP 2DROP FALSE EXIT THEN
+  >R ROT ROT OVER + ROT
+  R> OVER +
+  >R ROT R> SWAP >
+  >R > R> AND ;
 DOC" REPLACES ( c-addr1 u1 c-addr2 u2 -- ) set substitution text for name"
 : REPLACES 2DUP (SUBST-FIND) IF NIP NIP (SUBST-TEXT) PLACE
   ELSE (SUBST-CNT) @ (SUBST-MAX) >= IF 2DROP 2DROP EXIT THEN
@@ -440,7 +457,7 @@ CREATE (SS-NBUF) 64 ALLOT
   ELSE 37 (SS-ADD) (SS-ADDS) 37 (SS-ADD) THEN ;
 DOC" SUBSTITUTE ( c-addr1 u1 c-addr2 u2 -- c-addr2 u3 n ) expand %name% substitutions"
 : SUBSTITUTE
-  OVER >R 3 PICK R@ = IF 2DROP DROP R> 0 -1 EXIT THEN R> DROP
+  2OVER 2OVER (SS-LAP) IF 2DROP DROP 0 -1 EXIT THEN
   (SS-MAX) ! (SS-DEST) ! 0 (SS-LEN) ! 0 (SS-N) ! 0 (SS-ERR) !
   BEGIN DUP 0> WHILE
     OVER C@ 37 <> IF OVER C@ (SS-ADD) 1 /STRING
@@ -569,8 +586,8 @@ DOC" USE-BLOCK-FILE ( fileid -- ) select volume as current; flush previous"
 : USE-BLOCK-FILE FLUSH BLOCK-FILE ! ;
 DOC" CLOSE-BLOCK-FILE ( fileid -- ior ) flush if current, then CLOSE-FILE"
 : CLOSE-BLOCK-FILE DUP BLOCK-FILE @ = IF FLUSH 0 BLOCK-FILE ! THEN CLOSE-FILE ;
-DOC" LOAD ( i*x u -- j*x ) interpret block u"
-: LOAD (LOAD-ENTER) BLOCK 1024 (LOAD-RUN) ;
+DOC" LOAD ( i*x u -- j*x ) interpret block u as 16 lines of 64"
+: LOAD DUP BLOCK 1024 ROT (BLK-LOAD) ;
 DOC" THRU ( i*x u1 u2 -- j*x ) LOAD u1..u2 inclusive"
 : THRU 1+ SWAP ?DO I LOAD LOOP ;
 DOC" LIST ( u -- ) display block u as 16 lines of 64 chars"
@@ -752,6 +769,8 @@ DOC" XC!+? ( xchar xc-addr u1 -- xc-addr' u2 flag ) store if fits"
   NIP (XQ-MAX) @ FALSE ELSE XC!+ (XQ-MAX) @ (XQ-SZ) @ - TRUE THEN ;
 DOC" XC, ( xchar -- ) append UTF-8 xchar to dictionary"
 : XC, HERE XC!+ HERE - ALLOT ;
+DOC" XEMIT ( xchar -- ) emit UTF-8 xchar"
+: XEMIT PAD XC!+ PAD - PAD SWAP TYPE ;
 DOC" XCHAR+ ( xc-addr1 -- xc-addr2 ) skip one UTF-8 xchar forward"
 : XCHAR+ DUP 1 X-SIZE + ;
 DOC" XCHAR- ( xc-addr1 -- xc-addr2 ) skip one UTF-8 xchar backward"

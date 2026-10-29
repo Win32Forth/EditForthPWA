@@ -11,10 +11,27 @@ static size_t g_cap;
 static int g_posted;
 static int g_has_key;
 static int g_waiting;
+static int g_running;
+static int g_yield;
+static char g_breaks[640];
+static char g_last_name[80];
+static char *g_fetch_buf;
+static int g_fetch_len;
+static int g_fetch_ready;
+static int g_fetch_ok;
 
 /* Yield so the page can show the pause text and post the next key.
    A key typed while nothing is waiting is ignored, so a slow eval
    cannot arm the next DEBUG by accident. */
+static void web_view(void *ctx, const char *path, int line) {
+    (void)ctx;
+    EM_ASM({
+        if (typeof Module._forthView === "function") {
+            Module._forthView(UTF8ToString($0), $1);
+        }
+    }, path ? path : "", line);
+}
+
 static void web_debug(void *ctx, const char *path, int line, const char *name, int off, int len) {
     (void)ctx;
     EM_ASM({
@@ -22,6 +39,38 @@ static void web_debug(void *ctx, const char *path, int line, const char *name, i
             Module._forthDebug(Module.UTF8ToString($0), $1, Module.UTF8ToString($2), $3, $4);
         }
     }, path ? path : "", line, name ? name : "", off, len);
+}
+
+/* Ask the page for a file that is not already mounted. The page calls
+   ef_web_fetch_done before this returns, or later after emscripten_sleep. */
+static int web_fetch(void *ctx, const char *path, char **owned, int *len) {
+    (void)ctx;
+    free(g_fetch_buf);
+    g_fetch_buf = NULL;
+    g_fetch_len = 0;
+    g_fetch_ok = 0;
+    g_fetch_ready = 0;
+    EM_ASM({
+        var path = UTF8ToString($0);
+        if (typeof Module._forthFetch === "function") {
+            Module._forthFetch(path);
+        } else {
+            Module._ef_web_fetch_done(0, "");
+        }
+    }, path ? path : "");
+    while (!g_fetch_ready) {
+        emscripten_sleep(10);
+    }
+    if (!g_fetch_ok || !g_fetch_buf) {
+        free(g_fetch_buf);
+        g_fetch_buf = NULL;
+        return -1;
+    }
+    *owned = g_fetch_buf;
+    *len = g_fetch_len;
+    g_fetch_buf = NULL;
+    g_fetch_len = 0;
+    return 0;
 }
 
 static int web_key(void *ctx) {
@@ -80,9 +129,17 @@ int ef_web_boot(void) {
     ef_set_emit(g_vm, web_emit, NULL);
     ef_set_key(g_vm, web_key, NULL);
     ef_set_debug(g_vm, web_debug, NULL);
+    ef_set_view(g_vm, web_view, NULL);
+    ef_set_fetch(g_vm, web_fetch, NULL);
+    ef_set_yield(g_vm, g_yield);
     g_has_key = 0;
     g_waiting = 0;
-    return ef_boot(g_vm);
+    g_running = 1;
+    {
+        int rc = ef_boot(g_vm);
+        g_running = 0;
+        return rc;
+    }
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -100,12 +157,106 @@ int ef_web_key_waiting(void) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+void ef_web_fetch_done(int ok, const char *text) {
+    int n;
+    free(g_fetch_buf);
+    g_fetch_buf = NULL;
+    g_fetch_len = 0;
+    g_fetch_ok = 0;
+    if (ok && text) {
+        n = (int)strlen(text);
+        if (n >= 0 && n < 256 * 1024) {
+            g_fetch_buf = malloc((size_t)n + 1);
+            if (g_fetch_buf) {
+                memcpy(g_fetch_buf, text, (size_t)n + 1);
+                g_fetch_len = n;
+                g_fetch_ok = 1;
+            }
+        }
+    }
+    g_fetch_ready = 1;
+}
+
+EMSCRIPTEN_KEEPALIVE
 int ef_web_eval(const char *text) {
+    int rc;
     out_clear();
     if (!g_vm) {
         return -1;
     }
-    return ef_eval(g_vm, text ? text : "");
+    g_running = 1;
+    rc = ef_eval(g_vm, text ? text : "");
+    g_running = 0;
+    return rc;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int ef_web_running(void) {
+    return g_running;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void ef_web_set_yield(int on) {
+    g_yield = on ? 1 : 0;
+    if (g_vm) {
+        ef_set_yield(g_vm, g_yield);
+    }
+}
+
+EMSCRIPTEN_KEEPALIVE
+int ef_web_break_toggle(const char *name) {
+    return g_vm ? ef_break_toggle(g_vm, name ? name : "") : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int ef_web_break_clear(const char *name) {
+    return g_vm ? ef_break_clear(g_vm, name ? name : "") : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int ef_web_break_enable(const char *name, int on) {
+    return g_vm ? ef_break_set_enabled(g_vm, name ? name : "", on) : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *ef_web_breaks(void) {
+    g_breaks[0] = 0;
+    if (g_vm) {
+        ef_break_list(g_vm, g_breaks, (int)sizeof g_breaks);
+    }
+    return g_breaks;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void ef_web_bp_go(void) {
+    if (g_vm) {
+        ef_debug_bp_go(g_vm);
+    }
+}
+
+/* 0 set, 1 nothing running, 2 already paused (no-op). */
+EMSCRIPTEN_KEEPALIVE
+int ef_web_break_asap(void) {
+    if (!g_vm) {
+        return 1;
+    }
+    if (g_waiting) {
+        return 2;
+    }
+    if (!g_running && !ef_debug_armed(g_vm)) {
+        return 1;
+    }
+    ef_debug_request_break(g_vm);
+    return 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *ef_web_last_name(void) {
+    g_last_name[0] = 0;
+    if (g_vm) {
+        ef_last_name(g_vm, g_last_name, (int)sizeof g_last_name);
+    }
+    return g_last_name;
 }
 
 EMSCRIPTEN_KEEPALIVE

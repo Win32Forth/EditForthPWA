@@ -1,4 +1,4 @@
-import createEditForth from "./editforth.js?v=44";
+import createEditForth from "./editforth.js?v=59";
 
 const log = document.querySelector("#log");
 const installBtn = document.querySelector("#install");
@@ -18,8 +18,18 @@ const listing = document.querySelector("#listing");
 const where = document.querySelector("#where");
 const nameForm = document.querySelector("#name-form");
 const nameInput = document.querySelector("#name-input");
+const debugBar = document.querySelector("#debug-bar");
+const debugStatus = document.querySelector("#debug-status");
+const stepActions = document.querySelector("#step-actions");
+const stepButtons = [...document.querySelectorAll("#step-actions button")];
+const bpBtn = document.querySelector("#bp-btn");
+const bpPanel = document.querySelector("#bp-panel");
+const bpList = document.querySelector("#bp-list");
+const DBG_OVER = (2 << 24) | 16;
+const DBG_INTO = (2 << 24) | 17;
+const DBG_OUT = (2 << 24) | 18;
 
-const BANNER = "=== EditForthPWA 0.5.0 === Oct 28, 2026 11:42 AM ===\n";
+const BANNER = "=== EditForthPWA 0.6.0 === Oct 28, 2026 4:32 PM ===\n";
 
 const SEED =
   "\\ Cmd+Enter or Ctrl+Enter loads this file.\n" +
@@ -33,7 +43,7 @@ const shipped = new Map();
 const resourceText = new Map();
 let resourcePaths = null;
 let resourceIndexTask = null;
-let listSource = "private";
+let listSource = "resources";
 const SHIPPED_LIB = [
   "Resources/Library/Debugger/debugger.fth",
   "Resources/Library/Debugger/debug-bp.fth",
@@ -163,7 +173,7 @@ function peelBoot(text) {
   for (let i = 0; i < parts.length; i++) {
     const line = parts[i];
     const incomplete = i === parts.length - 1 && !endsNL;
-    if (!incomplete && /^ (?:Loading|Finished Loading): \S+$/.test(line)) {
+    if (!incomplete && (/^ (?:Loading|Finished Loading): \S+$/.test(line) || /^\S+ :(?:Loading|Reloading) module\s*$/.test(line))) {
       boot.push(line);
     } else {
       show.push(line);
@@ -232,6 +242,7 @@ function setPrompt(focus) {
   if (focus) {
     log.focus();
   }
+  refreshStrip();
 }
 
 function boundaryOffset(container, offset) {
@@ -792,6 +803,26 @@ function rememberEditor() {
   } else {
     tab.text = editor.value;
   }
+  tab.scrollTop = editor.scrollTop;
+  tab.scrollLeft = editor.scrollLeft;
+  tab.selStart = editor.selectionStart;
+  tab.selEnd = editor.selectionEnd;
+}
+
+let pinToken = 0;
+
+function pinEditor(top, left) {
+  const token = ++pinToken;
+  const apply = () => {
+    if (token !== pinToken) {
+      return;
+    }
+    editor.scrollTop = top;
+    editor.scrollLeft = left;
+    syncGutter();
+  };
+  apply();
+  requestAnimationFrame(apply);
 }
 
 function askSave(message) {
@@ -1104,7 +1135,12 @@ function showTab(tab, opts) {
   renderTree();
   updateSaveButton();
   paintModeMenu();
-  editor.focus();
+  const max = editor.value.length;
+  const start = Math.min(max, tab.selStart ?? 0);
+  const end = Math.min(max, tab.selEnd ?? start);
+  editor.focus({ preventScroll: true });
+  editor.setSelectionRange(start, end);
+  pinEditor(tab.scrollTop ?? 0, tab.scrollLeft ?? 0);
 }
 
 function showNone() {
@@ -1467,12 +1503,209 @@ function scrollIndex(index) {
   if (y < editor.scrollTop || y + lh > editor.scrollTop + editor.clientHeight) {
     editor.scrollTop = Math.max(0, y - editor.clientHeight / 3);
   }
-  syncGutter();
+  pinEditor(editor.scrollTop, editor.scrollLeft);
 }
 
 let lastWash = null;
 
+function refreshStrip() {
+  const paused = Boolean(api && api.keyWaiting && api.keyWaiting());
+  const lock = !ready || busy || paused;
+  document.querySelector("#load").disabled = lock;
+  document.querySelector("#restart").disabled = lock;
+  document.querySelector("#run").disabled = lock;
+  document.querySelector("#pause").disabled = !ready;
+  const stepping = Boolean(debugStatus.textContent);
+  stepActions.hidden = !stepping;
+  for (const button of stepButtons) {
+    button.disabled = !paused;
+  }
+}
+
+function hideDebugBar() {
+  debugStatus.textContent = "";
+  refreshStrip();
+}
+
+function showDebugBar(path, line, name) {
+  const where = path ? path + (line ? ":" + line : "") : "";
+  debugStatus.textContent = ["debugging", name, where].filter(Boolean).join(" · ");
+  refreshStrip();
+}
+
+function breakEntries() {
+  const raw = api.breaks() || "";
+  const entries = [];
+  for (const line of raw.split("\n")) {
+    const tab = line.indexOf("\t");
+    if (tab < 1) {
+      continue;
+    }
+    entries.push({ name: line.slice(0, tab), on: line.slice(tab + 1) === "1" });
+  }
+  return entries;
+}
+
+function paintBreaks() {
+  const entries = breakEntries();
+  bpBtn.textContent = entries.length ? "Breakpoints (" + entries.length + ")" : "Breakpoints";
+  bpList.replaceChildren();
+  if (!entries.length) {
+    const item = document.createElement("li");
+    item.textContent = "None yet.";
+    bpList.append(item);
+    return;
+  }
+  for (const entry of entries) {
+    const item = document.createElement("li");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = entry.on;
+    box.title = entry.on ? "Disable, keep the slot" : "Enable";
+    box.addEventListener("change", () => {
+      api.breakEnable(entry.name, box.checked ? 1 : 0);
+      paintBreaks();
+    });
+    const name = document.createElement("span");
+    name.className = entry.on ? "bp-name" : "bp-name off";
+    name.textContent = entry.name;
+    const del = document.createElement("button");
+    del.type = "button";
+    del.textContent = "×";
+    del.title = "Delete breakpoint";
+    del.addEventListener("click", () => {
+      api.breakClear(entry.name);
+      paintBreaks();
+    });
+    item.append(box, name, del);
+    bpList.append(item);
+  }
+}
+
+function caretWord() {
+  if (!currentTab()) {
+    return "";
+  }
+  return forthTokenAt(editor.value, editor.selectionStart);
+}
+
+function toggleCaretBreak() {
+  if (!ready) {
+    return;
+  }
+  const name = caretWord();
+  if (!name) {
+    return;
+  }
+  const rc = api.breakToggle(name);
+  paintBreaks();
+  if (rc === 0) {
+    write("BREAK: " + name + " is not defined\n");
+  } else if (rc < 0) {
+    write("BREAK table full\n");
+  }
+}
+
+function openBreaks(show) {
+  bpPanel.hidden = !show;
+  if (show) {
+    paintBreaks();
+  }
+}
+
+function runKind(event) {
+  const apple = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+  const cmd = event.metaKey || (!apple && event.ctrlKey);
+  if (event.altKey) {
+    return "";
+  }
+  if (cmd && event.shiftKey) {
+    return "bpgo";
+  }
+  if (cmd) {
+    return "debug";
+  }
+  if (!event.shiftKey && !event.ctrlKey && !event.metaKey) {
+    return "run";
+  }
+  return "";
+}
+
+function fillRunLine(kind) {
+  if (!ready || busy || api.keyWaiting() || !kind) {
+    return;
+  }
+  let name = caretWord();
+  if (!name) {
+    name = api.lastName() || "";
+  }
+  if (!name) {
+    write("RUN: no word under the caret, and LAST is empty\n");
+    return;
+  }
+  const line = kind === "debug" ? "DEBUG " + name : kind === "bpgo" ? "BPGO " + name : name;
+  render(line, true);
+  log.focus();
+}
+
+function pauseNow() {
+  if (!ready || api.keyWaiting()) {
+    return;
+  }
+  const rc = api.breakAsap();
+  if (rc === 1) {
+    write("Pause: nothing running\n");
+  }
+}
+
+async function armBreak() {
+  if (!ready || busy) {
+    return;
+  }
+  if (api.keyWaiting()) {
+    api.bpGo();
+    api.postKey("g".charCodeAt(0));
+    openBreaks(false);
+    return;
+  }
+  let name = caretWord();
+  if (!name) {
+    const hit = breakEntries().find((entry) => entry.on);
+    name = hit ? hit.name : "";
+  }
+  if (!name) {
+    write("Arm: set a breakpoint, or put the caret on a word\n");
+    return;
+  }
+  openBreaks(false);
+  busy = true;
+  refreshStrip();
+  try {
+    write("BPGO " + name + "\n");
+    rememberEditor();
+    syncMount();
+    api.setSource("");
+    await runEval("BPGO " + name);
+  } catch (err) {
+    write("include failed: " + (err && err.message ? err.message : String(err)) + "\n", "err");
+    setPrompt();
+  } finally {
+    busy = false;
+    setPrompt(false);
+    paintBreaks();
+  }
+}
+
 function showDebug(path, line, name, off, len) {
+  /* An empty path and name is the session ending. A pause with no file
+     still has a word name, and the strip stays up for that pause. */
+  if (!path && !name) {
+    lastWash = null;
+    clearHighlight();
+    hideDebugBar();
+    return;
+  }
+  showDebugBar(path, line, name);
   if (!path) {
     lastWash = null;
     clearHighlight();
@@ -1561,10 +1794,62 @@ function selectLine(line) {
   if (y < editor.scrollTop || y + lh > editor.scrollTop + editor.clientHeight) {
     editor.scrollTop = Math.max(0, y - editor.clientHeight / 3);
   }
-  syncGutter();
   markLine(index + 1);
-  editor.focus();
+  editor.focus({ preventScroll: true });
   editor.setSelectionRange(start, start + lines[index].length);
+  pinEditor(editor.scrollTop, editor.scrollLeft);
+}
+
+async function openViewSource(path, line) {
+  if (!path) {
+    return;
+  }
+  let text = files.has(path) ? files.get(path) : (shipped.get(path) ?? null);
+  if (text == null) {
+    try {
+      const res = await fetch(resourceUrl(path));
+      if (!res.ok) {
+        write("Could not open " + path + ".\n", "err");
+        return;
+      }
+      text = await res.text();
+      shipped.set(path, text);
+    } catch (err) {
+      write("Could not open " + path + ".\n", "err");
+      return;
+    }
+  }
+  let tab = tabs.find((item) => item.path === path && !item.shared);
+  if (!tab && !files.has(path)) {
+    tab = tabs.find((item) => item.path === path);
+  }
+  if (!tab) {
+    if (files.has(path)) {
+      await openFile(path, { view: true });
+    } else {
+      rememberEditor();
+      tab = {
+        id: nextTabId++,
+        path,
+        title: path.split("/").pop(),
+        saved: text,
+        view: true,
+        text,
+      };
+      tabs.push(tab);
+      showTab(tab, { view: true });
+    }
+  } else if (tab.id !== currentId) {
+    rememberEditor();
+    showTab(tab, { view: true });
+  } else if (!tab.view) {
+    tab.view = true;
+    editor.readOnly = true;
+    banner.hidden = false;
+  }
+  if (line > 0) {
+    selectLine(line);
+  }
 }
 
 async function revealError(name, line) {
@@ -1629,6 +1914,9 @@ async function loadShipped() {
 function debugCode(event) {
   if (event.metaKey || event.ctrlKey || event.altKey) {
     return null;
+  }
+  if (event.key === "F5") {
+    return "g".charCodeAt(0);
   }
   if (event.key === "F6") {
     return (2 << 24) | 16;
@@ -1697,11 +1985,19 @@ async function loadFile(fresh) {
     return;
   }
   busy = true;
+  refreshStrip();
   try {
     rememberEditor();
     if (fresh) {
+      hideDebugBar();
       resetConsole();
-      const bootCode = api.boot();
+      api.setYield(0);
+      let bootCode;
+      try {
+        bootCode = await api.boot();
+      } finally {
+        api.setYield(1);
+      }
       const bootText = api.output();
       if (bootText) {
         writeBoot(bootText, bootCode ? "err" : "");
@@ -1724,6 +2020,8 @@ async function loadFile(fresh) {
     setPrompt();
   } finally {
     busy = false;
+    refreshStrip();
+    paintBreaks();
   }
 }
 
@@ -1799,14 +2097,35 @@ document.querySelector("#open-folder").addEventListener("click", async () => {
 
 const Module = await createEditForth({
   locateFile(path, prefix) {
-    return (prefix || "") + path + "?v=44";
+    return (prefix || "") + path + "?v=59";
   },
 });
 Module._forthDebug = (path, line, name, off, len) => {
   showDebug(path, line, name, off, len);
 };
+Module._forthView = (path, line) => {
+  openViewSource(path, line);
+};
+const fetchDone = Module.cwrap("ef_web_fetch_done", null, ["number", "string"]);
+Module._forthFetch = (path) => {
+  fetch(resourceUrl(path))
+    .then(async (res) => {
+      if (!res.ok) {
+        fetchDone(0, "");
+        return;
+      }
+      const text = await res.text();
+      if (text.length > 256 * 1024 - 1) {
+        fetchDone(0, "");
+        return;
+      }
+      shipped.set(path, text);
+      fetchDone(1, text);
+    })
+    .catch(() => fetchDone(0, ""));
+};
 const api = {
-  boot: Module.cwrap("ef_web_boot", "number", []),
+  boot: Module.cwrap("ef_web_boot", "number", [], { async: true }),
   eval: Module.cwrap("ef_web_eval", "number", ["string"], { async: true }),
   mountClear: Module.cwrap("ef_web_mount_clear", "number", []),
   mount: Module.cwrap("ef_web_mount", "number", ["string", "string"]),
@@ -1819,8 +2138,19 @@ const api = {
   bootSource: Module.cwrap("ef_web_boot_source", "string", []),
   postKey: Module.cwrap("ef_web_post_key", null, ["number"]),
   keyWaiting: Module.cwrap("ef_web_key_waiting", "number", []),
+  running: Module.cwrap("ef_web_running", "number", []),
+  setYield: Module.cwrap("ef_web_set_yield", null, ["number"]),
+  breakToggle: Module.cwrap("ef_web_break_toggle", "number", ["string"]),
+  breakClear: Module.cwrap("ef_web_break_clear", "number", ["string"]),
+  breakEnable: Module.cwrap("ef_web_break_enable", "number", ["string", "number"]),
+  breaks: Module.cwrap("ef_web_breaks", "string", []),
+  bpGo: Module.cwrap("ef_web_bp_go", null, []),
+  breakAsap: Module.cwrap("ef_web_break_asap", "number", []),
+  lastName: Module.cwrap("ef_web_last_name", "string", []),
 };
 
+/* Yield stays off through cold boot. emscripten_sleep during that compile
+   holds the prompt and the file list for seconds. */
 const cold = api.bootSource();
 if (cold) {
   shipped.set("boot", cold);
@@ -1834,10 +2164,15 @@ function pumpDebug() {
   }
   write(text.slice(shownOut));
   shownOut = text.length;
+  refreshStrip();
 }
 Module._forthPump = pumpDebug;
 
 write(BANNER);
+let resourcesErr = null;
+const resourcesReady = loadResourceIndex().catch((err) => {
+  resourcesErr = err;
+});
 try {
   if (preferIdb()) {
     await seedIdb();
@@ -1865,7 +2200,12 @@ try {
   }
 }
 
-const bootCode = api.boot();
+let bootCode = 0;
+try {
+  bootCode = await api.boot();
+} finally {
+  api.setYield(1);
+}
 if (api.output()) {
   writeBoot(api.output());
 }
@@ -1875,11 +2215,46 @@ if (bootCode !== 0) {
   await loadShipped();
   ready = true;
 }
+await resourcesReady;
 setPrompt();
+if (resourcesErr) {
+  write("Could not list Resources.\n", "err");
+}
+paintSourceSwitch();
 showNone();
 
 document.querySelector("#load").addEventListener("click", () => loadFile(false));
 document.querySelector("#restart").addEventListener("click", () => loadFile(true));
+document.querySelector("#run").addEventListener("click", (event) => {
+  fillRunLine(runKind(event) || "run");
+});
+document.querySelector("#pause").addEventListener("click", () => pauseNow());
+bpBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  toggleCaretBreak();
+  openBreaks(true);
+});
+document.querySelector("#bp-toggle").addEventListener("click", (event) => {
+  event.stopPropagation();
+  toggleCaretBreak();
+});
+document.querySelector("#bp-arm").addEventListener("click", (event) => {
+  event.stopPropagation();
+  armBreak();
+});
+bpPanel.addEventListener("click", (event) => event.stopPropagation());
+document.addEventListener("click", () => openBreaks(false));
+function postDebug(code) {
+  if (!api.keyWaiting()) {
+    return;
+  }
+  api.postKey(code);
+}
+document.querySelector("#dbg-over").addEventListener("click", () => postDebug(DBG_OVER));
+document.querySelector("#dbg-into").addEventListener("click", () => postDebug(DBG_INTO));
+document.querySelector("#dbg-out").addEventListener("click", () => postDebug(DBG_OUT));
+document.querySelector("#dbg-go").addEventListener("click", () => postDebug("g".charCodeAt(0)));
+document.querySelector("#dbg-stop").addEventListener("click", () => postDebug(27));
 document.querySelector("#save").addEventListener("click", () => {
   const tab = currentTab();
   if (tab && bufferOf(tab) !== tab.saved) {
@@ -1892,6 +2267,43 @@ document.querySelector("#toggle-readonly").addEventListener("click", () => {
   toggleReadOnly();
 });
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !bpPanel.hidden && !api.keyWaiting()) {
+    openBreaks(false);
+  }
+  if (ready && !event.isComposing && event.key === "F9" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+    event.preventDefault();
+    toggleCaretBreak();
+    return;
+  }
+  if (ready && !event.isComposing && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key === "\\") {
+    event.preventDefault();
+    toggleCaretBreak();
+    return;
+  }
+  if (!ready || busy || api.keyWaiting() || event.isComposing) {
+    return;
+  }
+  if (event.target && (event.target.id === "name-input")) {
+    return;
+  }
+  if (event.key === "F4" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+    event.preventDefault();
+    loadFile(false);
+    return;
+  }
+  if (event.key === "F5") {
+    const kind = runKind(event);
+    if (kind) {
+      event.preventDefault();
+      fillRunLine(kind);
+    }
+    return;
+  }
+  if (event.metaKey && event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "y") {
+    event.preventDefault();
+    pauseNow();
+    return;
+  }
   if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "s") {
     event.preventDefault();
     const tab = currentTab();
@@ -1941,6 +2353,193 @@ editor.addEventListener("input", () => {
   updateSaveButton();
   renderTabs();
 });
+
+/* Command-click views the Forth word under the pointer. Blank, tab, and
+   newline end a token, same as the Mac editor and console. */
+function isCommandClick(event) {
+  if (event.button !== 0 || event.altKey || event.shiftKey) {
+    return false;
+  }
+  const apple = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+  if (apple) {
+    return event.metaKey && !event.ctrlKey;
+  }
+  return (event.metaKey || event.ctrlKey) && !(event.metaKey && event.ctrlKey);
+}
+
+function forthSep(ch) {
+  return ch === " " || ch === "\t" || ch === "\n" || ch === "\r";
+}
+
+function forthTokenAt(text, index) {
+  if (!text || index < 0) {
+    return "";
+  }
+  let i = Math.min(index, text.length);
+  if (i > 0 && i < text.length && forthSep(text[i])) {
+    i -= 1;
+  }
+  if (i >= text.length) {
+    i = text.length - 1;
+  }
+  if (i < 0 || forthSep(text[i])) {
+    return "";
+  }
+  let lo = i;
+  let hi = i + 1;
+  while (lo > 0 && !forthSep(text[lo - 1])) {
+    lo -= 1;
+  }
+  while (hi < text.length && !forthSep(text[hi])) {
+    hi += 1;
+  }
+  const name = text.slice(lo, hi);
+  if (!name || /^ok\(\d+\)>$/.test(name)) {
+    return "";
+  }
+  return name;
+}
+
+let monoWidthPx = 0;
+function monoWidth() {
+  if (monoWidthPx) {
+    return monoWidthPx;
+  }
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  ctx.font = getComputedStyle(editor).font;
+  monoWidthPx = ctx.measureText("0000000000").width / 10;
+  return monoWidthPx || 9;
+}
+
+function editorOffsetAt(clientX, clientY) {
+  const text = editor.value;
+  if (!text) {
+    return -1;
+  }
+  const cs = getComputedStyle(editor);
+  const lh = parseFloat(cs.lineHeight) || 21;
+  const padT = parseFloat(cs.paddingTop) || 0;
+  const padL = parseFloat(cs.paddingLeft) || 0;
+  const rect = editor.getBoundingClientRect();
+  const y = clientY - rect.top + editor.scrollTop - padT;
+  const x = clientX - rect.left + editor.scrollLeft - padL;
+  if (y < 0) {
+    return -1;
+  }
+  const line = Math.floor(y / lh);
+  const lines = text.split("\n");
+  if (line < 0 || line >= lines.length) {
+    return -1;
+  }
+  const row = lines[line];
+  const tabSize = parseInt(cs.tabSize, 10) || 8;
+  const width = monoWidth();
+  let visual = 0;
+  let col = row.length;
+  let px = 0;
+  for (let i = 0; i < row.length; i++) {
+    const cells = row[i] === "\t" ? tabSize - (visual % tabSize) : 1;
+    const advance = cells * width;
+    if (x < px + advance / 2) {
+      col = i;
+      break;
+    }
+    px += advance;
+    visual += cells;
+  }
+  let offset = 0;
+  for (let i = 0; i < line; i++) {
+    offset += lines[i].length + 1;
+  }
+  return offset + col;
+}
+
+function logOffsetAt(clientX, clientY) {
+  let node = null;
+  let offset = 0;
+  if (document.caretPositionFromPoint) {
+    const pos = document.caretPositionFromPoint(clientX, clientY);
+    if (pos && log.contains(pos.offsetNode)) {
+      node = pos.offsetNode;
+      offset = pos.offset;
+    }
+  }
+  if (!node && document.caretRangeFromPoint) {
+    const range = document.caretRangeFromPoint(clientX, clientY);
+    if (range && log.contains(range.startContainer)) {
+      node = range.startContainer;
+      offset = range.startOffset;
+    }
+  }
+  if (!node) {
+    return -1;
+  }
+  return boundaryOffset(node, offset);
+}
+
+async function viewWord(name) {
+  if (!name || !ready || busy || api.keyWaiting()) {
+    return;
+  }
+  busy = true;
+  try {
+    rememberEditor();
+    syncMount();
+    api.setSource("");
+    await runEval("VIEW " + name);
+  } catch (err) {
+    write("include failed: " + (err && err.message ? err.message : String(err)) + "\n", "err");
+  } finally {
+    busy = false;
+    setPrompt(false);
+  }
+}
+
+function commandView(event, text, index) {
+  if (!isCommandClick(event)) {
+    return;
+  }
+  const name = forthTokenAt(text, index);
+  if (!name) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  viewWord(name);
+}
+
+editor.addEventListener("mousedown", (event) => {
+  commandView(event, editor.value, editorOffsetAt(event.clientX, event.clientY));
+});
+log.addEventListener("mousedown", (event) => {
+  if (!isCommandClick(event)) {
+    return;
+  }
+  /* Keep the input caret on the prompt. A click in a WORDS list must not land in the transcript. */
+  event.preventDefault();
+  event.stopPropagation();
+  const name = forthTokenAt(readLog(), logOffsetAt(event.clientX, event.clientY));
+  if (name) {
+    viewWord(name);
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Meta" || (event.key === "Control" && !/Mac|iPhone|iPad|iPod/.test(navigator.platform))) {
+    document.body.classList.add("command-view");
+  }
+});
+document.addEventListener("keyup", (event) => {
+  if (event.key === "Meta" || event.key === "Control") {
+    const apple = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+    const held = apple ? event.metaKey : (event.metaKey || event.ctrlKey);
+    if (!held) {
+      document.body.classList.remove("command-view");
+    }
+  }
+});
+window.addEventListener("blur", () => document.body.classList.remove("command-view"));
+
 function isTypingKey(event) {
   if (event.metaKey || event.ctrlKey || event.altKey) {
     return false;

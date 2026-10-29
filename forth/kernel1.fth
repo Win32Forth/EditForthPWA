@@ -122,6 +122,11 @@ DOC" CONTEXT! ( wid -- ) replace first search-order entry (CONTEXT)"
 DOC" VOCABULARY ( 'name' -- ) named word list; execute replaces CONTEXT (classic)"
 : VOCABULARY CREATE DICT-THREADS 0 DO 0 , LOOP
   LAST >BODY (REGISTER-WID) DOES> CONTEXT! ;
+DOC" WORDLIST ( -- wid ) new empty wordlist; not added to the search order"
+: WORDLIST ( -- wid )
+  ALIGN HERE
+  DICT-THREADS 0 DO 0 , LOOP
+  DUP (REGISTER-WID) ;
 \ ciforth-style push: grow search order then set CONTEXT (like ALSO + replace).
 DOC" PUSH-ORDER ( wid -- ) search this wordlist first, keeping the rest"
 : PUSH-ORDER ( wid -- )

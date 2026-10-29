@@ -282,7 +282,8 @@ CREATE DBG-MAP-NAME  64 ALLOT
 \ Walking those bytes as call xts runs off the word and @ throws -16.
 : DBG-INLINE-STR?  ( xt -- flag )
   DUP SLIT-ADDR = IF  DROP TRUE EXIT  THEN
-  ['] (.") = ;
+  DUP ['] (.") = IF  DROP TRUE EXIT  THEN
+  ['] (C") = ;
 
 \ Body span in bytes (EXIT-inclusive). lim is a high-water mark: branch
 \ targets and one-cell lookahead after each token grow it. Ordinary CALL

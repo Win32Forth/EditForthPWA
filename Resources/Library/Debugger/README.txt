@@ -1,10 +1,9 @@
 64Forth Library/Debugger
 ========================
 
-High-level ITC DEBUG support that does not belong in the kernel cold blob
-or under Hyper.
+High-level ITC DEBUG support that does not belong in the kernel cold blob.
 
-  debugger.fth   Sole Autoload entry: VOCABULARY DEBUGGER, hub DEFERs /
+  debugger.fth   Loaded at boot from ef-hooks.fth: VOCABULARY DEBUGGER, hub DEFERs /
                  DBG-SET-*, INCLUDEDs siblings (ANEW-safe); arms phase-2/3.
   debug-bp.fth   BREAK / UNBREAK / DISABLE-BREAK / ENABLE-BREAK / .BREAKS / BPGO
   dbg-pause.fth  Key decode (DBG-PAUSE-DECODE) + full Forth pause UI
@@ -14,11 +13,8 @@ or under Hyper.
                  (loaded inside debugger.fth — not after Hyper)
                  (no Editor/Hyper required at load)
 
-AutoLoad (v1.5.2+):
-
-  FROMLIB REQUIRE Debugger/debugger.fth   \ loads bp, pause, ed links, maps
-  … Emitter, Hyper …                      \ no in-app SZ-EDITOR
-  debugger.fth calls DBG-MAP-BIND + DBG-SET-HL for 64Edit spans
+EditForthPWA loads debugger.fth at the end of cold boot. AutoLoad and Hyper
+are not in this tree.
 
 Kernel owns when to pause and thin helpers (_debug_call_xt nest RSP).
 Forth owns pause print/EKEY/step (DBG-PAUSE-XT) and key→mode (DBG-KEY-XT).

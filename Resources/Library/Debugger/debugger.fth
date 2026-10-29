@@ -8,8 +8,9 @@
 \
 \ Kernel: DBG-SHOW-XT, DBG-HL-XT, DBG-WHEEL-XT, DBG-PAUSE-XT, DBG-KEY-XT,
 \ DBG-SYNC-OK, BREAK-TABLE, (BP-GO), DBG-*@, DBG-STEP-*, DBG-.SR, …
+\ Loaded with the cold image. No ANEW marker.
 
-ANEW DEBUGGER_MODULE
+.( Loading: debugger.fth) CR
 
 ONLY FORTH DEFINITIONS
 VOCABULARY DEBUGGER
@@ -51,8 +52,6 @@ DEFER DBG-PAUSE         \ ( -- )  full pause UI: print, wait key, set step mode
 ;
 
 \ --- Sibling loads (extend here; Autoload only REQUIREs this file) ----------
-\ INCLUDED (not REQUIRE): ANEW DEBUGGER_MODULE forgets sibling words but the
-\ include registry would still skip REQUIRE — always re-read on hub reload.
 
 FROMLIB S" Debugger/debug-bp.fth" INCLUDED
 FROMLIB S" Debugger/dbg-pause.fth" INCLUDED

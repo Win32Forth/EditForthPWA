@@ -8,7 +8,10 @@
   <link rel="icon" href="icon-192.png">
   <meta name="theme-color" content="#ffffff">
   <style>
-    :root { color-scheme: light; }
+    :root {
+      color-scheme: light;
+      --ui-font: 15px/21px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
     html, body { height: 100%; }
     body {
       margin: 0;
@@ -17,7 +20,7 @@
       overflow: hidden;
       background: #ffffff;
       color: #111111;
-      font: 15px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font: var(--ui-font);
     }
     header {
       display: flex;
@@ -26,7 +29,7 @@
       padding: 8px 12px;
       border-bottom: 1px solid #d0d0d0;
     }
-    header h1 { font-size: 16px; font-weight: 600; margin: 0; }
+    header h1 { font: inherit; font-weight: 600; margin: 0; }
     #app-menu { position: relative; flex: none; }
     #menu-btn {
       width: 36px;
@@ -86,7 +89,7 @@
     }
     #folder:empty { display: none; }
     .spacer { flex: 1; }
-    button, input {
+    button, input, textarea, select, pre {
       font: inherit;
       color: inherit;
     }
@@ -188,11 +191,10 @@
       margin: 0;
       padding: 6px 10px 0;
       color: #555555;
-      font-size: 13px;
     }
     #list-note[hidden] { display: none; }
-    #show-resources { line-height: 1.15; text-align: left; }
-    #show-resources .hint { display: block; font-size: 11px; font-weight: normal; }
+    #show-resources { text-align: left; }
+    #show-resources .hint { display: block; font-weight: normal; }
     #edit {
       flex: 1;
       min-width: 0;
@@ -232,7 +234,6 @@
       background: #fff3b0;
       color: #111111;
       border-bottom: 1px solid #e6d48a;
-      font-size: 13px;
     }
     #banner[hidden] { display: none; }
     #banner .spacer { flex: 1; }
@@ -267,8 +268,7 @@
       color: #111111;
       background: #ffffff;
       padding: 12px 14px;
-      line-height: 21px;
-      font: inherit;
+      font: var(--ui-font);
     }
     #editor-pane.debugging #hl { display: block; }
     #editor-pane.debugging #editor {
@@ -296,8 +296,7 @@
       position: relative;
       z-index: 1;
       text-align: right;
-      line-height: 21px;
-      font: inherit;
+      font: var(--ui-font);
     }
     #gutter-mark {
       position: absolute;
@@ -308,6 +307,82 @@
       z-index: 0;
     }
     #gutter-mark[hidden] { display: none; }
+    #debug-bar {
+      flex: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 6px 10px;
+      background: #f7f7f7;
+      border-bottom: 1px solid #d0d0d0;
+      position: relative;
+    }
+    #debug-bar button {
+      background: #ffffff;
+      border: 1px solid #b0b0b0;
+      border-radius: 6px;
+      padding: 4px 10px;
+      cursor: pointer;
+    }
+    #debug-bar button.primary { background: #111111; color: #ffffff; }
+    #debug-bar button:disabled {
+      color: #888888;
+      cursor: default;
+    }
+    #debug-status {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #debug-actions, #step-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+    #step-actions[hidden] { display: none; }
+    #bp-wrap { position: relative; }
+    #bp-panel {
+      position: absolute;
+      z-index: 6;
+      right: 0;
+      bottom: calc(100% + 6px);
+      width: 320px;
+      max-height: 280px;
+      overflow: auto;
+      padding: 10px;
+      background: #ffffff;
+      border: 1px solid #b0b0b0;
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(17, 17, 17, 0.12);
+    }
+    #bp-panel[hidden] { display: none; }
+    #bp-panel header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 0 8px;
+      border: 0;
+    }
+    #bp-panel header strong { font-weight: 600; }
+    #bp-list { margin: 0; padding: 0; list-style: none; }
+    #bp-list li {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 2px 0;
+    }
+    #bp-list .bp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    #bp-list .bp-name.off { color: #6a6a6a; }
+    #bp-list button {
+      padding: 0 6px;
+      border: 0;
+      background: transparent;
+      color: #9b1c1c;
+    }
+    #bp-note { margin: 8px 0 0; color: #444444; }
     #split {
       flex: none;
       height: 18px;
@@ -339,7 +414,7 @@
       background: #ffffff;
       color: #111111;
       padding: 12px 14px;
-      line-height: 21px;
+      font: var(--ui-font);
       white-space: pre;
     }
     #editor[readonly] {
@@ -385,7 +460,10 @@
       word-break: break-word;
       outline: none;
       caret-color: #111111;
+      font: var(--ui-font);
     }
+    body.command-view #editor,
+    body.command-view #log { cursor: pointer; }
     .err { color: #9b1c1c; }
     @media (max-width: 700px) {
       #workspace { flex-direction: column; }
@@ -414,17 +492,15 @@
     <span id="folder"></span>
     <span id="where"></span>
     <span class="spacer"></span>
-    <button id="load" class="primary" type="button" title="Include this file (Cmd+Enter or Ctrl+Enter)">Include</button>
-    <button id="restart" type="button" title="Fresh image">Restart</button>
     <button id="install" hidden type="button">Install</button>
   </header>
   <div id="workspace">
     <aside id="tree">
       <div id="source-switch" class="tools" role="group" aria-label="File list">
-        <button id="show-private" type="button" aria-pressed="true" title="Files saved in this browser">Private</button>
-        <button id="show-resources" type="button" aria-pressed="false" title="Read only. These files cannot be changed.">Resources<span class="hint">read only</span></button>
+        <button id="show-private" type="button" aria-pressed="false" title="Files saved in this browser">Private</button>
+        <button id="show-resources" type="button" aria-pressed="true" title="Read only. These files cannot be changed.">Resources<span class="hint">read only</span></button>
       </div>
-      <p id="list-note" hidden>Read only. These files cannot be changed.</p>
+      <p id="list-note">Read only. These files cannot be changed.</p>
       <div class="tools">
         <button id="new-file" type="button">New</button>
         <button id="save" type="button" title="Save this file into private storage. A new file asks for a name. (Cmd+S or Ctrl+S)" disabled>Save</button>
@@ -454,6 +530,36 @@
         </div>
       </section>
       <div id="split" role="separator" aria-orientation="horizontal" aria-label="Resize console" aria-controls="console" tabindex="0" title="Drag to resize the console"></div>
+      <section id="debug-bar">
+        <div id="debug-actions">
+          <button id="load" class="primary" type="button" title="Include this file (F4, Cmd+Enter, or Ctrl+Enter)">Include</button>
+          <button id="restart" type="button" title="Fresh image">Restart</button>
+          <button id="run" type="button" title="RUN (F5). Word under the caret, or LAST. Command-click fills DEBUG. Command-Shift-click fills BPGO. Return runs it.">RUN</button>
+          <button id="pause" type="button" title="Pause at the next word defined after the debugger (Control-Command-Y). Already paused, or nothing running, does nothing.">Pause</button>
+        </div>
+        <span id="debug-status"></span>
+        <span class="spacer"></span>
+        <div id="step-actions" hidden>
+          <button id="dbg-over" type="button" title="Step Over (F6)" disabled>Step Over</button>
+          <button id="dbg-into" type="button" title="Step Into (F7)" disabled>Step Into</button>
+          <button id="dbg-out" type="button" title="Step Out (F8)" disabled>Step Out</button>
+          <button id="dbg-go" type="button" title="Continue (g)" disabled>Continue</button>
+          <button id="dbg-stop" type="button" title="Stop (Esc)" disabled>Stop</button>
+        </div>
+        <div id="bp-wrap">
+          <button id="bp-btn" type="button" title="Toggle BREAK on the word under the caret (F9 or Command-\), then show the list">Breakpoints</button>
+          <div id="bp-panel" hidden>
+            <header>
+              <strong>Breakpoints</strong>
+              <span class="spacer"></span>
+              <button id="bp-toggle" type="button" title="Toggle BREAK on the word under the caret">Toggle caret</button>
+              <button id="bp-arm" type="button" title="Paused: continue until an enabled BREAK. Idle: BPGO the caret word, or the first enabled breakpoint.">Arm</button>
+            </header>
+            <ul id="bp-list"></ul>
+            <p id="bp-note">F9 or Command-\ toggles the word under the caret.</p>
+          </div>
+        </div>
+      </section>
       <section id="console">
         <div id="log" contenteditable="true" spellcheck="false" autocorrect="off" autocapitalize="off" role="textbox" aria-multiline="true" aria-label="Forth console"></div>
       </section>
@@ -469,6 +575,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="app.js?v=44"></script>
+  <script type="module" src="app.js?v=59"></script>
 </body>
 </html>

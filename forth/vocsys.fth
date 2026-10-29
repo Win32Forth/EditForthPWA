@@ -46,7 +46,7 @@ DECIMAL
   {: xt to -- :}
   xt FORTH-WORDLIST to XT>WL-FROM ;
 
-\ S" name" on this engine keeps the blank after the quote. Skip that blank.
+\ S" already dropped one blank. Skip another only if the name still starts with one.
 : FORTH>WL  ( c-addr u wid -- )
   >R
   DUP IF OVER C@ BL = IF SWAP CHAR+ SWAP 1- THEN THEN
@@ -173,8 +173,6 @@ S" DBG-ABORT-SESSION"  FORTH>SYSVOC
 S" TDBG-ARM-KEYS"      FORTH>SYSVOC
 S" TDBG-DISARM-KEYS"   FORTH>SYSVOC
 
-\ This image has no S\". Plant the four bytes of the name (C").
-HERE CHAR ( C, CHAR C C, CHAR " C, CHAR ) C, 4 FORTH>SYSVOC
 S" (LOAD-ENTER)"       FORTH>SYSVOC
 S" (LOAD-RUN)"         FORTH>SYSVOC
 S" (LOCAL!)"           FORTH>SYSVOC

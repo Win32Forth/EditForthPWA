@@ -9,3 +9,7 @@ change.
 
 forth.s, the boot-word includes, and kernel_api.h are not here. This port
 does not assemble the ARM64 kernel.
+
+ef32.c and ef32.h are copies of kernel/ef32.c and kernel/ef32.h. `make`
+refreshes them. `VIEW` of a primitive, such as `DUP`, opens ef32.c at the
+function. Edit the kernel copies when the engine should change.

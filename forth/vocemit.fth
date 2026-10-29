@@ -48,7 +48,7 @@ VOCABULARY EMITTER
 : >EMITTER  ( xt -- )  EMITTER-WID XT>WL ;
 
 \ Move a FORTH-resident xt into EMITTER if it is still in FORTH (reload-safe).
-\ S" name" on this engine keeps the blank after the quote. Skip that blank.
+\ S" already dropped one blank. Skip another only if the name still starts with one.
 : FORTH>EMITTER  ( c-addr u -- )
   DUP IF OVER C@ BL = IF SWAP CHAR+ SWAP 1- THEN THEN
   2DUP FORTH-WORDLIST SEARCH-WORDLIST

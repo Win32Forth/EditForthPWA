@@ -7,6 +7,19 @@ mod._forthDebug = (path, line, name, off, len) => {
   paints.push({ path, line, name, off, len });
 };
 const boot = mod.cwrap("ef_web_boot", "number", []);
+const fetchDone = mod.cwrap("ef_web_fetch_done", null, ["number", "string"]);
+mod._forthFetch = (path) => {
+  try {
+    const text = readFileSync(new URL("../" + path, import.meta.url), "utf8");
+    if (text.length > 256 * 1024 - 1) {
+      fetchDone(0, "");
+      return;
+    }
+    fetchDone(1, text);
+  } catch (err) {
+    fetchDone(0, "");
+  }
+};
 const ev = mod.cwrap("ef_web_eval", "number", ["string"]);
 const out = mod.cwrap("ef_web_output", "string", []);
 const depth = mod.cwrap("ef_web_depth", "number", []);
@@ -60,6 +73,67 @@ const inc = ev("INCLUDE b.fth");
 if (inc !== 0 || item(depth() - 1) !== 42) {
   die("include rc=" + inc + " depth=" + depth() + " top=" + item(depth() - 1) + " out=" + out());
 }
+const fm = ev("10 0 3 FM/MOD");
+if (fm !== 0 || item(depth() - 1) !== 3 || item(depth() - 2) !== 1) {
+  die("fm/mod rc=" + fm + " depth=" + depth() + " out=" + out());
+}
+ev("2DROP");
+const floor = ev("-10 -1 3 FM/MOD");
+if (floor !== 0 || item(depth() - 1) !== -4 || item(depth() - 2) !== 2) {
+  die("fm/mod floor rc=" + floor + " rem=" + item(depth() - 2) + " quot=" + item(depth() - 1));
+}
+ev("2DROP");
+const sd = ev("123 S>D");
+if (sd !== 0 || item(depth() - 1) !== 0 || item(depth() - 2) !== 123) {
+  die("s>d rc=" + sd + " hi=" + item(depth() - 1) + " lo=" + item(depth() - 2));
+}
+ev("2DROP");
+const noname = ev(":NONAME 6 7 + ; EXECUTE");
+if (noname !== 0 || item(depth() - 1) !== 13) {
+  die("noname rc=" + noname + " top=" + item(depth() - 1) + " out=" + out());
+}
+ev("DROP");
+const env = ev('S" FLOORED" ENVIRONMENT?');
+if (env !== 0 || item(depth() - 1) !== -1 || item(depth() - 2) !== 0) {
+  die("env rc=" + env + " flag=" + item(depth() - 1) + " val=" + item(depth() - 2));
+}
+ev("2DROP");
+const made = ev('S" wa.txt" W/O CREATE-FILE');
+if (made !== 0 || item(depth() - 1) !== 0) {
+  die("create rc=" + made + " ior=" + item(depth() - 1) + " out=" + out());
+}
+const fid = item(depth() - 2);
+ev("2DROP");
+const wrote = ev("PAD 0 " + fid + " WRITE-LINE");
+if (wrote !== 0 || item(depth() - 1) !== 0) {
+  die("write-line rc=" + wrote + " ior=" + item(depth() - 1));
+}
+ev("DROP");
+ev(fid + " CLOSE-FILE DROP");
+const st = ev('S" wa.txt" FILE-STATUS');
+if (st !== 0 || item(depth() - 1) !== 0) {
+  die("status rc=" + st + " ior=" + item(depth() - 1));
+}
+ev("2DROP");
+ev('S" wa.txt" DELETE-FILE DROP');
+const quit = ev("1 2 QUIT 99");
+if (quit !== 0 || depth() < 2 || item(depth() - 1) !== 2) {
+  die("quit rc=" + quit + " depth=" + depth() + " top=" + item(depth() - 1));
+}
+ev("2DROP");
+if (mount("echo.fth", "1 2 +\n\n3\n") !== 0) {
+  die("echo mount failed");
+}
+const quiet = ev("FILE-ECHO ON\n1 2 .\n");
+if (quiet !== 0 || out().includes("|") || !out().includes("2 ")) {
+  die("file-echo console out=" + JSON.stringify(out()));
+}
+const echoed = ev("INCLUDE echo.fth\nFILE-ECHO OFF\n");
+const echoText = out();
+if (echoed !== 0 || !echoText.includes("    1| 1 2 +") || !echoText.includes("    2| ") ||
+    !echoText.includes("    3| 3")) {
+  die("file-echo include rc=" + echoed + " out=" + JSON.stringify(echoText));
+}
 const bad = ev("1 1 +\nnope\n");
 if (bad !== -13 || errLine() !== 2 || errName() !== "lib/a.fth") {
   die("loc rc=" + bad + " line=" + errLine() + " name=" + errName() + " out=" + out());
@@ -111,6 +185,48 @@ if (fromShort !== 0 || depth() !== dirDepth + 1 || item(dirDepth) !== 77) {
   die("fromlib short rc=" + fromShort + " depth=" + depth() + " top=" + item(depth() - 1) + " out=" + JSON.stringify(out()));
 }
 ev("DROP");
+const views = [];
+mod._forthView = (path, line) => {
+  views.push({ path, line });
+};
+const viewRc = ev("VIEW CELL+");
+if (viewRc !== 0 || !out().includes("boot:") || views.length !== 1 || views[0].path !== "boot" || views[0].line < 1 || depth() !== dirDepth) {
+  die("view cell+ rc=" + viewRc + " depth=" + depth() + " views=" + JSON.stringify(views) + " out=" + JSON.stringify(out()));
+}
+const viewMiss = ev("VIEW NO-SUCH-VIEWWORD");
+if (viewMiss !== 0 || !out().includes("undefined: NO-SUCH-VIEWWORD") || views.length !== 1 || depth() !== dirDepth) {
+  die("view miss rc=" + viewMiss + " depth=" + depth() + " out=" + JSON.stringify(out()));
+}
+const viewDup = ev("VIEW DUP");
+const dupLine = views.length === 2 ? views[1].line : 0;
+const csrc = readFileSync(new URL("../Resources/Library/Sources/ef32.c", import.meta.url), "utf8").split("\n");
+const dupText = dupLine > 0 && dupLine <= csrc.length ? csrc[dupLine - 1] : "";
+if (viewDup !== 0 || !out().includes("Resources/Library/Sources/ef32.c:") || views.length !== 2 || views[1].path !== "Resources/Library/Sources/ef32.c" || !dupText.includes("static int p_dup") || depth() !== dirDepth) {
+  die("view dup rc=" + viewDup + " depth=" + depth() + " views=" + JSON.stringify(views) + " line=" + JSON.stringify(dupText) + " out=" + JSON.stringify(out()));
+}
+const sq = ev('S" AB" NIP');
+if (sq !== 0 || depth() !== dirDepth + 1 || item(dirDepth) !== 2) {
+  die("s-quote one blank rc=" + sq + " depth=" + depth() + " top=" + item(depth() - 1));
+}
+ev("DROP");
+const sq2 = ev('S"  AB" DROP C@');
+if (sq2 !== 0 || depth() !== dirDepth + 1 || item(dirDepth) !== 32) {
+  die("s-quote two blanks rc=" + sq2 + " depth=" + depth() + " top=" + item(depth() - 1));
+}
+ev("DROP");
+mod._forthFetch = (path) => {
+  if (path === "Resources/Library/Classes/probe.fth") {
+    fetchDone(1, "88\n");
+    return;
+  }
+  fetchDone(0, "");
+};
+const fetched = ev('FROMLIB S" Classes/probe.fth" INCLUDED');
+if (fetched !== 0 || depth() !== dirDepth + 1 || item(dirDepth) !== 88) {
+  die("fetch probe rc=" + fetched + " depth=" + depth() + " top=" + item(depth() - 1) + " out=" + JSON.stringify(out()));
+}
+ev("DROP");
+mod._forthFetch = (path) => fetchDone(0, "");
 const evAsync = mod.cwrap("ef_web_eval", "number", ["string"], { async: true });
 const postKey = mod.cwrap("ef_web_post_key", null, ["number"]);
 const keyWaiting = mod.cwrap("ef_web_key_waiting", "number", []);
@@ -144,6 +260,14 @@ for (let i = 0; i < 5; i++) {
   await waitFor(() => keyWaiting());
   if (i === 0 && !out().includes(">> LIT")) {
     die("no pause text " + JSON.stringify(out()));
+  }
+  if (i === 1) {
+    const lit = out().split("\n").find((line) => line.includes(">> LIT"));
+    const sAt = lit ? lit.indexOf("S(") : -1;
+    const rAt = lit ? lit.indexOf("R(") : -1;
+    if (sAt !== 23 || rAt !== sAt + 45) {
+      die("stack cols s=" + sAt + " r=" + rAt + " line=" + JSON.stringify(lit));
+    }
   }
   postKey("o".charCodeAt(0));
   await new Promise((r) => setTimeout(r, 40));
@@ -337,4 +461,59 @@ const dotText = paints.slice(dotAt)
 if (dotRc !== 0 || !out().includes("hi") || !dotText.includes('."')) {
   die("hdot rc=" + dotRc + " text=" + JSON.stringify(dotText) + " out=" + JSON.stringify(out()));
 }
+const breakToggle = mod.cwrap("ef_web_break_toggle", "number", ["string"]);
+const breakClear = mod.cwrap("ef_web_break_clear", "number", ["string"]);
+const breakEnable = mod.cwrap("ef_web_break_enable", "number", ["string", "number"]);
+const breakList = mod.cwrap("ef_web_breaks", "string", []);
+const breakAsap = mod.cwrap("ef_web_break_asap", "number", []);
+const running = mod.cwrap("ef_web_running", "number", []);
+const setYield = mod.cwrap("ef_web_set_yield", null, ["number"]);
+setYield(1);
+if (breakAsap() !== 1) {
+  die("pause idle " + breakAsap());
+}
+if (breakToggle("DUP") !== 1 || !breakList().startsWith("DUP\t1\n")) {
+  die("toggle add " + JSON.stringify(breakList()));
+}
+if (breakEnable("DUP", 0) !== 1 || breakList() !== "DUP\t0\n") {
+  die("toggle off " + JSON.stringify(breakList()));
+}
+if (breakEnable("DUP", 1) !== 1 || breakToggle("NOSUCHWORD") !== 0) {
+  die("toggle miss " + JSON.stringify(breakList()));
+}
+const bpAt = paints.length;
+const bping = evAsync(": TBP 3 DUP DROP ; BPGO TBP");
+await waitFor(() => keyWaiting());
+if (!out().includes("DUP") || paints.slice(bpAt).every((p) => p.name !== "DUP")) {
+  die("bpgo " + JSON.stringify(out()) + " " + JSON.stringify(paints.slice(bpAt)));
+}
+postKey(27);
+const bpRc = await bping;
+if (bpRc === 0 || breakToggle("DUP") !== 2 || breakList() !== "") {
+  die("bpgo end rc=" + bpRc + " list=" + JSON.stringify(breakList()) + " out=" + JSON.stringify(out()));
+}
+if (breakToggle("SWAP") !== 1 || breakClear("SWAP") !== 1 || breakList() !== "") {
+  die("clear " + JSON.stringify(breakList()));
+}
+const spinAt = paints.length;
+const spinning = evAsync(": SPIN 0 BEGIN 1+ DUP 40000 > UNTIL DROP ; SPIN");
+await waitFor(() => running());
+if (breakAsap() !== 0) {
+  die("pause set while spinning");
+}
+await waitFor(() => keyWaiting());
+const spinPaint = paints.slice(spinAt);
+if (!spinPaint.some((p) => p.name)) {
+  die("pause now " + JSON.stringify(out()) + " " + JSON.stringify(spinPaint));
+}
+postKey(27);
+const spinRc = await spinning;
+if (running() !== 0 || keyWaiting() !== 0) {
+  die("pause leftover rc=" + spinRc + " out=" + JSON.stringify(out()));
+}
+const pauseDepth = depth();
+if (ev("1 2 +") !== 0 || depth() !== pauseDepth + 1 || item(depth() - 1) !== 3) {
+  die("after pause rc depth=" + depth() + " pauseDepth=" + pauseDepth + " out=" + JSON.stringify(out()));
+}
+ev("DROP");
 console.log("wasm-test ok");

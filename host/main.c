@@ -9,6 +9,16 @@ static char cap[65536];
 static size_t cap_n;
 static int capturing;
 
+static const char *accept_keys;
+
+static int accept_key(void *ctx) {
+    const char **p = ctx;
+    if (!p || !*p || !**p) {
+        return -1;
+    }
+    return *(*p)++;
+}
+
 static int stdin_key(void *ctx) {
     FILE *fp = ctx ? ctx : stdin;
     int c;
@@ -114,6 +124,81 @@ static int self_test(void) {
         fprintf(stderr, "error loc rc=%d line=%d name=%s\n", rc, ef_error_line(vm),
                 ef_error_name(vm));
         fails++;
+    }
+    rc = ef_eval(vm, "10 0 3 FM/MOD");
+    if (rc || ef_depth(vm) < 2 || ef_stack_item(vm, ef_depth(vm) - 1) != 3 ||
+        ef_stack_item(vm, ef_depth(vm) - 2) != 1) {
+        fprintf(stderr, "fm/mod rc=%d depth=%d\n", rc, ef_depth(vm));
+        fails++;
+    } else {
+        ef_eval(vm, "2DROP");
+    }
+    rc = ef_eval(vm, "-10 -1 3 FM/MOD");
+    if (rc || ef_depth(vm) < 2 || ef_stack_item(vm, ef_depth(vm) - 1) != -4 ||
+        ef_stack_item(vm, ef_depth(vm) - 2) != 2) {
+        fprintf(stderr, "fm/mod floor rc=%d top=%d rem=%d\n", rc,
+                ef_depth(vm) ? (int)ef_stack_item(vm, ef_depth(vm) - 1) : 0,
+                ef_depth(vm) > 1 ? (int)ef_stack_item(vm, ef_depth(vm) - 2) : 0);
+        fails++;
+    } else {
+        ef_eval(vm, "2DROP");
+    }
+    if (ef_mount_file(vm, "echo.fth", "1 2 +\n\n3\n")) {
+        fails += fail_msg("echo mount failed");
+    }
+    capturing = 1;
+    cap_n = 0;
+    cap[0] = 0;
+    rc = ef_eval(vm, "FILE-ECHO ON\n1 2 .\n");
+    capturing = 0;
+    if (rc || strstr(cap, "|") != NULL || strstr(cap, "2 ") == NULL) {
+        fprintf(stderr, "file-echo console rc=%d out=[%s]\n", rc, cap);
+        fails++;
+    }
+    capturing = 1;
+    cap_n = 0;
+    cap[0] = 0;
+    rc = ef_eval(vm, "INCLUDE echo.fth\nFILE-ECHO OFF\n");
+    capturing = 0;
+    if (rc || strstr(cap, "    1| 1 2 +") == NULL || strstr(cap, "    2| ") == NULL ||
+        strstr(cap, "    3| 3") == NULL) {
+        fprintf(stderr, "file-echo include rc=%d out=[%s]\n", rc, cap);
+        fails++;
+    }
+    {
+        int before = ef_depth(vm);
+        rc = ef_eval(vm, "1 2 QUIT 99");
+        if (rc || ef_depth(vm) != before + 2 ||
+            ef_stack_item(vm, ef_depth(vm) - 1) != 2 ||
+            ef_stack_item(vm, ef_depth(vm) - 2) != 1) {
+            fprintf(stderr, "quit rc=%d depth=%d top=%d\n", rc, ef_depth(vm),
+                    ef_depth(vm) ? (int)ef_stack_item(vm, ef_depth(vm) - 1) : 0);
+            fails++;
+        } else {
+            ef_eval(vm, "2DROP");
+        }
+    }
+    accept_keys = "Hi\n";
+    ef_set_key(vm, accept_key, &accept_keys);
+    rc = ef_eval(vm, "PAD 8 ACCEPT");
+    if (rc || ef_depth(vm) < 1 || ef_stack_item(vm, ef_depth(vm) - 1) != 2) {
+        fprintf(stderr, "accept rc=%d top=%d\n", rc,
+                ef_depth(vm) ? (int)ef_stack_item(vm, ef_depth(vm) - 1) : 0);
+        fails++;
+    } else {
+        ef_eval(vm, "DROP");
+    }
+    ef_set_key(vm, NULL, NULL);
+    if (ef_mount_file(vm, "sid.fth", "SOURCE-ID\n")) {
+        fails += fail_msg("source-id mount failed");
+    }
+    rc = ef_eval(vm, "INCLUDE sid.fth");
+    if (rc || ef_depth(vm) < 1 || ef_stack_item(vm, ef_depth(vm) - 1) != 1) {
+        fprintf(stderr, "source-id rc=%d top=%d\n", rc,
+                ef_depth(vm) ? (int)ef_stack_item(vm, ef_depth(vm) - 1) : 0);
+        fails++;
+    } else {
+        ef_eval(vm, "DROP");
     }
     rc = ef_eval(vm, "INCLUDE no-such-editforth-file.fth");
     if (rc != -38) {

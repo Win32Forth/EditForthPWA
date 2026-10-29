@@ -17,13 +17,14 @@ BEGIN-STRUCTURE FA-S1
 END-STRUCTURE
 FA-S1 0 = S" empty-struct" EXPECT
 
-\ --- +FIELD: 1 char + 1 cell ---
-\ size = 1 + 8 = 9 on 64-bit cells
+\ --- +FIELD: 1 char, then an aligned cell ---
+\ CELL is 4. +FIELD does not align. ALIGNED lifts offset 1 to 4, then + 4 = 8.
+\ The cell store needs that aligned address.
 BEGIN-STRUCTURE FA-S2
   1 CHARS +FIELD FA-A
-  1 CELLS +FIELD FA-B
+  ALIGNED 1 CELLS +FIELD FA-B
 END-STRUCTURE
-FA-S2 9 = S" struct-size" EXPECT
+FA-S2 8 = S" struct-size" EXPECT
 
 CREATE FA-INST FA-S2 ALLOT
 77 FA-INST FA-A C!
@@ -37,8 +38,8 @@ BEGIN-STRUCTURE FA-S3
   FIELD: FA-X
   FIELD: FA-Y
 END-STRUCTURE
-0 FA-Y 8 = S" FIELD:-off" EXPECT
-FA-S3 16 = S" FIELD:-size" EXPECT
+0 FA-Y 4 = S" FIELD:-off" EXPECT
+FA-S3 8 = S" FIELD:-size" EXPECT
 
 \ --- CFIELD: ---
 BEGIN-STRUCTURE FA-S5
@@ -49,13 +50,13 @@ END-STRUCTURE
 FA-S5 2 = S" CFIELD:-size" EXPECT
 
 \ --- nested structures ---
-\ FA-S2 is 9; ALIGNED bumps to 16; FA-S3 is 16 → total 32 when clean
+\ FA-S2 is 8 and already aligned; FA-S3 is 8 → total 16
 BEGIN-STRUCTURE FA-S4
   FA-S2 +FIELD FA-N
   ALIGNED
   FA-S3 +FIELD FA-M
 END-STRUCTURE
-FA-S4 16 > S" nested-size" EXPECT
+FA-S4 16 = S" nested-size" EXPECT
 
 \ --- ENVIRONMENT? FACILITY / FACILITY-EXT ---
 S" FACILITY" ENVIRONMENT? NIP S" ENV-FACILITY" EXPECT

@@ -1099,7 +1099,6 @@ ITC `DEBUG` / `DBG` stepper behavior unchanged aside from source highlight.
 **Highlights (vs 1.1.6):**
 - Library `Assembler/asmarm64.fth` — dual-home AArch64 toolkit (host buffer + `ASMARM64-DISCARD`); pack twin in 64TCOM (**Synced Aug 23, 2026 3:16 PM**)
 - `Assembler/ASMARMTESTS.fth` → `ASM-TESTS` (64 encode/run checks)
-- Docs: `STATUSASM64.md` (twin of 64TCOM monitor)
 - File Open / New / Save As while SZ-EDITOR KEY waits (shipped path continued from 1.1.6 work)
 - 64TCOM side: pack Version **0.8**; `TCOM tetra/tetra.fth` builds `.app` with ASMARM64 search-order fixes
 

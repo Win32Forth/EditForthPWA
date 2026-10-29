@@ -6,8 +6,7 @@
 \ Search-Order / VOCABULARY / FORGET → search.fth later
 \ NOT a formal ANS certificate. Prefer Hayes coreexttest.fth for stock suite.
 \
-\ Note: interpret TO for VALUE had a stack-pop bug (fixed in forth.s). Until
-\ rebuild, VALUE change is tested via CFA+16 store (same layout as kernel TO).
+\ VALUE stores one cell at >BODY. This image is 32-bit, so that is CFA+8.
 
 DECIMAL
 ONLY FORTH DEFINITIONS
@@ -27,10 +26,10 @@ HERE 8 ERASE
 HERE C@ 0=
 HERE 4 + C@ 0= AND S" ERASE" EXPECT
 
-\ --- VALUE (fetch) and store via body (TO layout CFA+16) ---
+\ --- VALUE (fetch) and store at >BODY ---
 123 VALUE CE-V1
 CE-V1 123 = S" VALUE" EXPECT
-456 ' CE-V1 16 + !
+456 ' CE-V1 >BODY !
 CE-V1 456 = S" VALUE-store" EXPECT
 
 \ --- COMPILE, ---

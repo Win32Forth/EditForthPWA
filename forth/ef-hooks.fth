@@ -27,11 +27,36 @@ BREAK-TABLE 8 CELLS ERASE
 CREATE BREAK-ENABLES 8 CELLS ALLOT
 BREAK-ENABLES 8 CELLS ERASE
 
-\ Host open-at-line. The page has no editor hook yet.
-: (EDIT-AT) ( c-addr u line -- )
-  2DROP DROP
-  ." EDIT-AT is not on this page" CR ;
+\ Host open-at-line. The page shows that file in view mode. No host: no-op.
+: (EDIT-AT) ( c-addr u line -- ) (HOST-VIEW) ;
 : EDIT-AT ( c-addr u line -- ) (EDIT-AT) ;
+
+\ Search order first, then every named vocabulary, same as a soft VIEW.
+\ (SEE-HDR) and (SEE-LOC) live in SYSVOC.
+ALSO SYSVOC
+: (VIEW-XT) ( c-addr u -- xt true | false )
+  PAD PLACE
+  PAD FIND DUP IF DROP TRUE EXIT THEN
+  2DROP
+  XREF-COLLECT-WIDS
+  XREF-WIDN @ 0 ?DO
+    PAD COUNT XREF-WIDS I CELLS + @ SEARCH-WORDLIST
+    IF TRUE UNLOOP EXIT THEN
+  LOOP
+  FALSE ;
+: VIEW ( "name" -- )
+  PARSE-NAME DUP 0= IF 2DROP EXIT THEN
+  2DUP (VIEW-XT) 0= IF
+    ."undefined: " TYPE CR EXIT
+  THEN
+  NIP NIP
+  (SEE-HDR) (SEE-LOC)
+  DUP VIEW-FILE# 0= IF DROP EXIT THEN
+  DUP VIEW-LINE >R
+  DUP VIEW-FILE# VIEW-PATH
+  DUP 0= IF 2DROP R> DROP DROP EXIT THEN
+  R> (EDIT-AT) DROP ;
+PREVIOUS
 
 \ Heads store CFAs. >LINK is the link field.
 : (TZ-CFA) ( cfa -- cfa ) ;
@@ -90,7 +115,7 @@ WARNING OFF
 : XT>WL ( xt to-wid -- )
   FORTH-WORDLIST SWAP XT>WL-FROM ;
 
-\ S" name" on this engine keeps the blank after the quote. Skip that blank.
+\ S" already dropped one blank. Skip another only if the name still starts with one.
 : FORTH>WL ( c-addr u wid -- )
   >R
   DUP IF OVER C@ BL = IF SWAP CHAR+ SWAP 1- THEN THEN
@@ -125,4 +150,7 @@ WARNING OFF
 WARNING !
 
 ONLY FORTH DEFINITIONS
-.( Finished Loading: ef-hooks.fth) CR
+
+\ Library debugger. Not Autoload. This file loads the other Debugger sources.
+FROMLIB S" Debugger/debugger.fth" INCLUDED
+.( Finished Loading: debugger.fth) CR

@@ -162,7 +162,7 @@ DEFER DBG-ED-HL-HIST-CLR   \ ( -- )
 
 : DBG-ED-FIND  ( c-addr u -- xt true | false )
   \ FIND: xt 1|-1 | c-addr 0. DUP IF leaves ( xt flag ); DROP the flag — not NIP.
-  \ This engine's S" keeps one leading blank; a real token does not.
+  \ S" drops the first blank. Drop another if this text still starts with one.
   (S-BL) DBG-CMD DBG-PLACE
   DBG-CMD FIND DUP IF  DROP TRUE  ELSE  2DROP FALSE  THEN ;
 

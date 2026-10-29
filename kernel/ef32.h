@@ -34,6 +34,10 @@ typedef int (*ef_key_fn)(void *ctx);
 /* Debug pause location. An empty path clears the editor wash.
    off/len are file-relative UTF-8 bytes; len 0 means search by name. */
 typedef void (*ef_debug_fn)(void *ctx, const char *path, int line, const char *name, int off, int len);
+/* Open path at a 1-based line. The page shows that source in view mode. */
+typedef void (*ef_view_fn)(void *ctx, const char *path, int line);
+/* Copy a missing file into *owned (malloc) and set *len. Return 0, or nonzero if absent. */
+typedef int (*ef_fetch_fn)(void *ctx, const char *path, char **owned, int *len);
 
 ef_vm *ef_create(void);
 void ef_destroy(ef_vm *vm);
@@ -41,6 +45,8 @@ void ef_destroy(ef_vm *vm);
 void ef_set_emit(ef_vm *vm, ef_emit_fn fn, void *ctx);
 void ef_set_key(ef_vm *vm, ef_key_fn fn, void *ctx);
 void ef_set_debug(ef_vm *vm, ef_debug_fn fn, void *ctx);
+void ef_set_view(ef_vm *vm, ef_view_fn fn, void *ctx);
+void ef_set_fetch(ef_vm *vm, ef_fetch_fn fn, void *ctx);
 
 /* Interpret text. Newlines are whitespace. '\' comments end at newline.
    Returns 0, or a THROW code. After a THROW the VM is usable again:
@@ -73,5 +79,20 @@ int32_t ef_stack_item(const ef_vm *vm, int from_bottom);
 int ef_state(const ef_vm *vm);
 int ef_throw_code(const ef_vm *vm);
 int ef_bye_requested(const ef_vm *vm);
+
+/* BREAK table. Safe while a pause is waiting for a key: these do not EVALUATE.
+   Toggle returns 1 added, 2 removed, 0 not found, -1 table full.
+   The list is "NAME\\t1\\n" for each occupied slot (1 enabled, 0 kept but off). */
+int ef_break_toggle(ef_vm *vm, const char *name);
+int ef_break_clear(ef_vm *vm, const char *name);
+int ef_break_set_enabled(ef_vm *vm, const char *name, int enabled);
+void ef_break_list(ef_vm *vm, char *dst, int dstmax);
+void ef_debug_bp_go(ef_vm *vm);
+int ef_debug_armed(const ef_vm *vm);
+void ef_debug_request_break(ef_vm *vm);
+/* When set, a long inner loop returns to the page every 2048 steps. */
+void ef_set_yield(ef_vm *vm, int on);
+/* Dictionary spelling of LAST. Empty when LAST is unset. */
+void ef_last_name(ef_vm *vm, char *dst, int dstmax);
 
 #endif
