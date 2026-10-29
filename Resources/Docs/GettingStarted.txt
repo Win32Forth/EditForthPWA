@@ -1,0 +1,63 @@
+Getting started
+---------------
+
+Welcome to EditForth PWA (Progressive Web App)
+
+This version of EditForth runs in your browser, so you can try the
+Forth language without installing anything. Example programs are
+included. You can read them, and you can change a private copy.
+
+Wait until the console, the pane at the bottom, shows ok(0)> .
+The first time, that can take a few seconds.
+
+This note is the GettingStarted.txt tab at the top of the window.
+You can open other files, then click that tab to come back here.
+
+The first demo is HELLO.fth, in Library/Sample. The file list on
+the left opens on Resources. Click a folder name to open or close
+it. Docs is already open. Click Library, then Sample, then
+HELLO.fth.
+
+1. Press Include. That is the black button under the editor.
+   F4, Cmd+Enter, and Ctrl+Enter do the same thing.
+   Include compiles the file. It does not save it.
+   The console prints:
+
+       Type HELLO <return> to run this Hello World program
+
+2. Click the console, type HELLO, and press Return.
+   Or click the word HELLO in the editor, press RUN or F5, and
+   then press Return. RUN only fills the console line.
+
+The console prints:
+
+    Hello World!
+
+Resources files are read only. Include still runs them. Edit asks
+before it copies a file into Private. Save, Cmd+S, or Ctrl+S keeps
+later changes there. Private files stay in this browser after you
+close the tab. Clearing this site's saved data removes them.
+
+Share writes a copy of the open file outside the browser. Chrome
+asks where to save it. Another browser may download it or open
+the share sheet.
+
+Restart boots a fresh image and clears the console. Include the
+file again after Restart. Include does not run by itself on Restart.
+
+You can look through the samples and the system source. Opening a
+file only displays it. Include runs a file whose name ends in
+.fth, .fs, or .f. Files in the System folder are already loaded,
+except the tests under Testing.
+
+Changing the engine means downloading the project and building it
+on your computer. EditForth is public domain. You can do what you
+want with it, and you are responsible for what you do with it.
+
+To use your own folder of source files, open the menu at the upper
+left (the button with three lines) and choose Open Folder. That
+needs Chrome or Edge.
+
+In Chrome, an Install button can appear at the upper right. It
+adds EditForth as an app you can open on its own. The button is
+not shown in every browser.

@@ -186,7 +186,7 @@
     }
     #listing button.active { background: #e8e8e8; }
     #listing button.locked { color: #555555; }
-    #listing .dir { color: #444444; padding: 4px 8px; }
+    #listing button.dir { color: #444444; padding-top: 4px; padding-bottom: 4px; }
     #list-note {
       margin: 0;
       padding: 6px 10px 0;
@@ -422,7 +422,7 @@
       color: #111111;
     }
     button:disabled { opacity: 0.45; cursor: default; }
-    #save-ask {
+    #save-ask, #notice {
       position: fixed;
       inset: 0;
       z-index: 5;
@@ -431,8 +431,8 @@
       justify-content: center;
       background: rgba(17, 17, 17, 0.25);
     }
-    #save-ask[hidden] { display: none; }
-    #save-ask .card {
+    #save-ask[hidden], #notice[hidden] { display: none; }
+    #save-ask .card, #notice .card {
       max-width: 440px;
       background: #ffffff;
       color: #111111;
@@ -440,8 +440,8 @@
       border-radius: 8px;
       padding: 16px;
     }
-    #save-ask p { margin: 0 0 14px; }
-    #save-ask .choices { display: flex; gap: 8px; justify-content: flex-end; }
+    #save-ask p, #notice p { margin: 0 0 14px; }
+    #save-ask .choices, #notice .choices { display: flex; gap: 8px; justify-content: flex-end; }
     #console {
       flex: none;
       height: 190px;
@@ -488,7 +488,7 @@
         <button id="toggle-readonly" type="button" role="menuitem" disabled>Read Only</button>
       </div>
     </div>
-    <h1>EditForth 0.7.0</h1>
+    <h1>EditForth 0.8.0</h1>
     <span id="folder"></span>
     <span id="where"></span>
     <span class="spacer"></span>
@@ -575,6 +575,14 @@
       </div>
     </div>
   </div>
-  <script type="module" src="app.js?v=60"></script>
+  <div id="notice" hidden>
+    <div class="card">
+      <p id="notice-text"></p>
+      <div class="choices">
+        <button type="button" id="notice-ok">OK</button>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="app.js?v=76"></script>
 </body>
 </html>

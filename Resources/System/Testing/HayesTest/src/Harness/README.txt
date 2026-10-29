@@ -19,7 +19,7 @@ Do not put assertion/test sources in Harness. Keep Harness free of the
 stock suite so diffs against forth2012-test-suite stay obvious.
 
 Run (from the app):
-  FROMLIB FLOAD HayesTest/HayesTest.fth
+  FROMLIB FLOAD Testing/HayesTest/HayesTest.fth
   → FLOAD src/Harness/prepare-blocks.fth  (if OPEN-BLOCK-FILE present)
   → … word-set tests …
   → FLOAD src/Harness/runfptests.fth      (after ALSO FLOATING)

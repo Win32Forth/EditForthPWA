@@ -1,3 +1,4 @@
+\ First visit: open Resources/Docs/GettingStarted.txt
 \ hello.fth — tiny App Output / window emit smoke
 
 : HELLO  ( -- )

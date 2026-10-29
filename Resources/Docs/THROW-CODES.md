@@ -6,7 +6,7 @@ The published list is Forth 2012, Exception word set. This image uses these code
 
 | Code | Meaning here |
 |------|----------------|
-| −1 | `ABORT`, and the step limit inside the inner interpreter |
+| −1 | `ABORT`, and the inner interpreter after 500 million steps |
 | −2 | `ABORT"` |
 | −3 | Data-stack underflow |
 | −4 | Data-stack overflow |

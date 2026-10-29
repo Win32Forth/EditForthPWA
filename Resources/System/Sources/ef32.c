@@ -76,7 +76,7 @@
 #define EF_CWD 8
 #define EF_REQ 64
 #define EF_VIEWS 48
-/* File-id 2 is Resources/Library/Sources/ef32.c. Includes start at 3. */
+/* File-id 2 is Resources/System/Sources/ef32.c. Includes start at 3. */
 #define EF_VIEW_C 2
 #define EF_LOCAL_MAX 32
 #define EF_LOCAL_FRAMES 16
@@ -112,6 +112,12 @@ struct ef_vm {
     int line;
     int file_id;
     int next_file;
+    /* One eval can start at this 1-based line of src_name. hold_line keeps
+       interpret from resetting the line. Console input uses both so a later
+       pause can mark the token in the accumulated source. */
+    int src_line;
+    int src_line_set;
+    int hold_line;
     int src_len;
     /* Address SOURCE returns. SRC_ADDR for a console line or an included
        line. EVALUATE points it at the string it was given. */
@@ -189,11 +195,13 @@ struct ef_vm {
 
     ef_emit_fn emit;
     ef_key_fn key;
+    ef_keyq_fn key_q;
     ef_debug_fn debug_fn;
     ef_view_fn view_fn;
     ef_fetch_fn fetch_fn;
     void *emit_ctx;
     void *key_ctx;
+    void *key_q_ctx;
     void *debug_ctx;
     void *view_ctx;
     void *fetch_ctx;
@@ -1175,7 +1183,9 @@ static int inner(ef_vm *vm, int stop_rsp) {
     vm->in_inner = 1;
     while (vm->ip != 0 && vm->rsp >= stop_rsp && !vm->quit_req) {
         int32_t xt;
-        if (++guard > 50000000) {
+        /* One eval. Yield every 2048 steps keeps Pause alive, so the
+           browser does not treat a long loop as a hung tab. */
+        if (++guard > 500000000) {
             vm->in_inner = prev;
             return fail(vm, -1, "step limit\n");
         }
@@ -1979,6 +1989,20 @@ static int p_environment(ef_vm *vm) {
     return push(vm, 0);
 }
 
+/* Paint pending console output and return. One millisecond lets the browser draw the line. */
+static int p_pause(ef_vm *vm) {
+    (void)vm;
+#ifdef __EMSCRIPTEN__
+    EM_ASM({
+        if (typeof Module._forthPump === "function") Module._forthPump();
+    });
+    emscripten_sleep(1);
+#else
+    fflush(stdout);
+#endif
+    return EF_OK;
+}
+
 static int p_ms(ef_vm *vm) {
     int32_t ms;
     if (pop(vm, &ms)) {
@@ -2703,7 +2727,7 @@ static int p_paren(ef_vm *vm) {
         }
     }
 }
-/* S" drops one leading blank. Further blanks stay in the string. ." does not. */
+/* ." S" and C" drop one leading blank. Further blanks stay in the string. */
 static void drop_first_blank(char *buf, int *n) {
     if (*n > 0 && buf[0] == ' ') {
         memmove(buf, buf + 1, (size_t)(*n));
@@ -2731,9 +2755,7 @@ static int compile_or_type_string(ef_vm *vm, int32_t rt, int do_type, int do_pus
     if (parse_until(vm, do_type && rt == vm->xt_dotparen ? ')' : '"', buf, sizeof buf, &n)) {
         return EF_THROW;
     }
-    if (do_push && !do_type) {
-        drop_first_blank(buf, &n);
-    }
+    drop_first_blank(buf, &n);
     if (!compiling) {
         if (do_type) {
             int i;
@@ -3485,6 +3507,50 @@ int ef_set_source(ef_vm *vm, const char *name) {
     return 0;
 }
 
+int ef_set_source_line(ef_vm *vm, int line) {
+    if (!vm) {
+        return -1;
+    }
+    vm->src_line = line > 0 ? line : 1;
+    vm->src_line_set = 1;
+    return 0;
+}
+
+static void remember_view(ef_vm *vm, int id, const char *path);
+
+/* Reuse the view id already stored for this path. A console transcript and
+   an editor buffer stay one file across many evals, so Pause can map a token
+   back to the line that compiled it. */
+static int view_id_named(const ef_vm *vm, const char *path) {
+    int i;
+    if (!path || !path[0]) {
+        return 0;
+    }
+    for (i = 0; i < vm->nviews; i++) {
+        if (strcmp(vm->views[i].path, path) == 0) {
+            return vm->views[i].id;
+        }
+    }
+    return 0;
+}
+
+static void stamp_source(ef_vm *vm) {
+    int id;
+    if (!vm->src_name[0]) {
+        return;
+    }
+    id = view_id_named(vm, vm->src_name);
+    if (id) {
+        vm->file_id = id;
+        return;
+    }
+    vm->file_id = vm->next_file++;
+    if (vm->next_file > 0x1fff) {
+        vm->next_file = EF_VIEW_C + 1;
+    }
+    remember_view(vm, vm->file_id, vm->src_name);
+}
+
 static void remember_view(ef_vm *vm, int id, const char *path) {
     int i;
     if (!path || !path[0] || id <= 0) {
@@ -3616,7 +3682,7 @@ static void add_cand(char cands[][512], int *nc, const char *s) {
             return;
         }
     }
-    if (*nc >= 5) {
+    if (*nc >= 8) {
         return;
     }
     snprintf(cands[*nc], 512, "%s", tmp);
@@ -3630,19 +3696,28 @@ static int open_embedded_boot(char **owned, int *len);
    BEGIN-LOAD-CWD are both tried: BEGIN runs before OPEN-FILE. */
 static int resolve_file(ef_vm *vm, const char *name, char *resolved, size_t rmax,
                         char **owned, int *len) {
-    char cands[5][512];
+    char cands[8][512];
     char joined[512];
     int nc = 0;
     int i;
     static const char libprefix[] = "Resources/Library/";
+    static const char sysprefix[] = "Resources/System/";
     *owned = NULL;
     *len = 0;
     resolved[0] = 0;
     add_cand(cands, &nc, name);
-    /* FROMLIB plants Resources/Library/name. An open Library folder mounts
-       the same file as name, with no Resources/Library prefix. */
+    /* FROMLIB plants Resources/Library/name or Resources/System/name.
+       An open folder mounts the same file as name, with no prefix.
+       Library/ and System/ are the same roots without Resources/. */
     if (strncmp(name, libprefix, sizeof libprefix - 1) == 0) {
         add_cand(cands, &nc, name + (sizeof libprefix - 1));
+    }
+    if (strncmp(name, sysprefix, sizeof sysprefix - 1) == 0) {
+        add_cand(cands, &nc, name + (sizeof sysprefix - 1));
+    }
+    if (strncmp(name, "Library/", 8) == 0 || strncmp(name, "System/", 7) == 0) {
+        snprintf(joined, sizeof joined, "Resources/%s", name);
+        add_cand(cands, &nc, joined);
     }
     if (vm->include_dir[0]) {
         snprintf(joined, sizeof joined, "%s/%s", vm->include_dir, name);
@@ -3846,9 +3921,13 @@ static void file_echo_upto(ef_vm *vm) {
 static int interpret(ef_vm *vm) {
     char name[EF_WORD_MAX];
     int n;
-    /* A line load already stored the file line. A whole buffer starts at 1. */
+    /* A line load already stored the file line. A whole buffer starts at 1
+       unless this eval named a line in an accumulated source file. */
     if (!vm->load_on) {
-        vm->line = 1;
+        if (!vm->hold_line) {
+            vm->line = 1;
+        }
+        vm->hold_line = 0;
     }
     while (!vm->throw_code) {
         if (vm->quit_req) {
@@ -4535,7 +4614,21 @@ static int p_app_size(ef_vm *vm) {
     }
     return push(vm, 0);
 }
-static int p_key_q(ef_vm *vm) { return push(vm, 0); }
+static int p_key_q(ef_vm *vm) {
+    int flag = 0;
+    static int calls;
+    /* PAUSE itself still yields every time. KEY? yields on every 10th call. */
+    if (++calls >= 10) {
+        calls = 0;
+        if (p_pause(vm)) {
+            return EF_THROW;
+        }
+    }
+    if (vm->key_q && vm->key_q(vm->key_q_ctx)) {
+        flag = -1;
+    }
+    return push(vm, flag);
+}
 static int p_latest(ef_vm *vm) { return push(vm, uv(vm, UV_CURRENT)); }
 static int p_evaluate(ef_vm *vm) {
     src_frame saved;
@@ -5384,12 +5477,50 @@ static int p_fromlib(ef_vm *vm) { vm->dbg_fromlib = 1; return EF_OK; }
 static int p_fromlib_q(ef_vm *vm) { return push(vm, vm->dbg_fromlib ? -1 : 0); }
 static int p_fromlib_off(ef_vm *vm) { vm->dbg_fromlib = 0; return EF_OK; }
 
+/* EditForth keeps these folders under Resources/System. FROMLIB still
+   accepts the short name: FROMLIB FLOAD Testing/… and Debugger/…. */
+static int fromlib_is_system(const char *spec) {
+    const char *s = spec ? spec : "";
+    char folder[32];
+    size_t n = 0;
+    static const char *names[] = {
+        "assembler", "debugger", "emitter", "hyper",
+        "reference", "sources", "testing", NULL
+    };
+    int i;
+    while (*s == '/') {
+        s++;
+    }
+    while (s[n] && s[n] != '/' && n + 1 < sizeof folder) {
+        folder[n] = (char)tolower((unsigned char)s[n]);
+        n++;
+    }
+    if (s[n] && s[n] != '/') {
+        return 0;
+    }
+    folder[n] = 0;
+    for (i = 0; names[i]; i++) {
+        if (strcmp(folder, names[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static const char *fromlib_prefix(const char *spec) {
+    return fromlib_is_system(spec) ? "Resources/System/" : "Resources/Library/";
+}
+
+static void fromlib_base_path(const char *spec, char *base, size_t n) {
+    snprintf(base, n, "%s", fromlib_is_system(spec) ? "Resources/System" : "Resources/Library");
+}
+
 /* One-shot prefix for the next INCLUDED. S" already dropped one leading blank. */
 static int p_resolve_key(ef_vm *vm) {
     char raw[EF_PARSE_MAX];
     char path[EF_PARSE_MAX];
     const char *s;
-    const char *prefix = "Resources/Library/";
+    const char *prefix;
     size_t plen;
     int n;
     if (!vm->dbg_fromlib) {
@@ -5405,7 +5536,11 @@ static int p_resolve_key(ef_vm *vm) {
         s++;
         n--;
     }
+    prefix = fromlib_prefix(s);
     plen = strlen(prefix);
+    if ((strncmp(s, "Resources/Library/", 18) == 0 || strncmp(s, "Resources/System/", 17) == 0)) {
+        return plant_parse(vm, s, n);
+    }
     if (n >= (int)plen && strncmp(s, prefix, plen) == 0) {
         return plant_parse(vm, s, n);
     }
@@ -8373,7 +8508,7 @@ static int p_chdir(ef_vm *vm) {
     }
     slashes(spec);
     if (fromlib) {
-        snprintf(base, sizeof base, "Resources/Library");
+        fromlib_base_path(got ? spec : "", base, sizeof base);
     } else {
         snprintf(base, sizeof base, "%s", vm->logical_cwd);
     }
@@ -8418,7 +8553,7 @@ static int p_ls(ef_vm *vm) {
     }
     slashes(spec);
     if (fromlib) {
-        snprintf(base, sizeof base, "Resources/Library");
+        fromlib_base_path(got ? spec : "", base, sizeof base);
     } else {
         snprintf(base, sizeof base, "%s", vm->logical_cwd);
     }
@@ -8770,6 +8905,7 @@ static const struct {
     { "(APP-MOUSE)", p_app_mouse, 0 },
     { "(APP-SIZE?)", p_app_size, 0 },
     { "KEY?", p_key_q, 0 },
+    { "PAUSE", p_pause, 0 },
     { "LATEST", p_latest, 0 },
     { "EVALUATE", p_evaluate, 0 },
     { "GET-CURRENT", p_get_current, 0 },
@@ -8961,7 +9097,7 @@ static void register_all(ef_vm *vm) {
     int saved_file = vm->file_id;
     g_prim_count = 0;
     memset(g_prims, 0, sizeof g_prims);
-    remember_view(vm, EF_VIEW_C, "Resources/Library/Sources/ef32.c");
+    remember_view(vm, EF_VIEW_C, "Resources/System/Sources/ef32.c");
     vm->file_id = EF_VIEW_C;
     for (i = 0; i < sizeof k_prims / sizeof k_prims[0]; i++) {
         int32_t id;
@@ -9129,15 +9265,28 @@ void ef_set_key(ef_vm *vm, ef_key_fn fn, void *ctx) {
     vm->key_ctx = ctx;
 }
 
+void ef_set_key_q(ef_vm *vm, ef_keyq_fn fn, void *ctx) {
+    if (!vm) {
+        return;
+    }
+    vm->key_q = fn;
+    vm->key_q_ctx = ctx;
+}
+
 int ef_eval(ef_vm *vm, const char *text) {
     src_frame saved;
     size_t n;
     int rc;
     int top;
     int saved_inner;
+    int hold_line;
+    int start_line;
     if (!text) {
         text = "";
     }
+    hold_line = vm->src_line_set;
+    start_line = vm->src_line > 0 ? vm->src_line : 1;
+    vm->src_line_set = 0;
     saved_inner = vm->in_inner;
     top = vm->eval_depth == 0;
     if (top) {
@@ -9184,7 +9333,13 @@ int ef_eval(ef_vm *vm, const char *text) {
     {
         int saved_load = vm->load_on;
         vm->load_on = 0;
+        stamp_source(vm);
+        if (hold_line) {
+            vm->line = start_line;
+            vm->hold_line = 1;
+        }
         rc = interpret(vm);
+        vm->hold_line = 0;
         vm->load_on = saved_load;
     }
     if (rc != EF_OK && vm->err_line == 0) {

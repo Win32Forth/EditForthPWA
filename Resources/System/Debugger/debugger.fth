@@ -1,6 +1,6 @@
 \ debugger.fth — high-level ITC DEBUG hub + loader
 \
-\ Sole Autoload entry for Library/Debugger/. Loads sibling files in order and
+\ Sole Autoload entry for System/Debugger/. Loads sibling files in order and
 \ owns the DEBUGGER vocabulary.
 \
 \ Phase 2: full Forth pause UI via DBG-PAUSE-INSTALL (default after Autoload).

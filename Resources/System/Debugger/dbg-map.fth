@@ -1,4 +1,4 @@
-\ dbg-map.fth — debug-time colon token maps (Library/Debugger)
+\ dbg-map.fth — debug-time colon token maps (System/Debugger)
 \
 \ Own body-walk (Emitter-style rules; no Emitter FLOAD).
 \ ALLOCATE arena persists for the process; prune on ANEW-HOOK.

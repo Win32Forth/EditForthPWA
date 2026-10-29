@@ -1,5 +1,5 @@
 \ Prove DBG-HOST-SPAN exists and map publishes distinct offs for cell 0..2
-S" Library/Debugger/debugger.fth" INCLUDED
+S" System/Debugger/debugger.fth" INCLUDED
 FROMLIB REQUIRE DbgSpanSmoke/dup-test.fth
 ONLY FORTH ALSO SYSVOC ALSO DEBUGGER DEFINITIONS
 

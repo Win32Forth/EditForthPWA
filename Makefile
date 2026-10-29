@@ -9,7 +9,7 @@ EMCC    ?= emcc
 # gnu11: EM_ASM in host/web_main.c is rejected under -std=c11.
 EMFLAGS  = -O2 -std=gnu11 -Wall -Wextra $(CPPFLAGS)
 EMFLAGS += -s WASM=1 -s MODULARIZE=1 -s EXPORT_ES6=1 -s EXPORT_NAME=createEditForth
-EMFLAGS += -s EXPORTED_FUNCTIONS='["_ef_web_boot","_ef_web_eval","_ef_web_mount_clear","_ef_web_mount","_ef_web_set_source","_ef_web_output","_ef_web_depth","_ef_web_item","_ef_web_state","_ef_web_bye","_ef_web_error_line","_ef_web_error_name","_ef_web_boot_source","_ef_web_post_key","_ef_web_key_waiting","_ef_web_fetch_done","_ef_web_running","_ef_web_set_yield","_ef_web_break_toggle","_ef_web_break_clear","_ef_web_break_enable","_ef_web_breaks","_ef_web_bp_go","_ef_web_break_asap","_ef_web_last_name","_malloc","_free"]'
+EMFLAGS += -s EXPORTED_FUNCTIONS='["_ef_web_boot","_ef_web_eval","_ef_web_mount_clear","_ef_web_mount","_ef_web_set_source","_ef_web_set_source_line","_ef_web_output","_ef_web_depth","_ef_web_item","_ef_web_state","_ef_web_bye","_ef_web_error_line","_ef_web_error_name","_ef_web_boot_source","_ef_web_post_key","_ef_web_key_waiting","_ef_web_fetch_done","_ef_web_running","_ef_web_set_yield","_ef_web_break_toggle","_ef_web_break_clear","_ef_web_break_enable","_ef_web_breaks","_ef_web_bp_go","_ef_web_break_asap","_ef_web_last_name","_malloc","_free"]'
 EMFLAGS += -s EXPORTED_RUNTIME_METHODS='["cwrap","UTF8ToString"]'
 EMFLAGS += -s ENVIRONMENT=web,node -s ALLOW_MEMORY_GROWTH=1 -s EXIT_RUNTIME=0
 EMFLAGS += -s ASYNCIFY=1 -s ASYNCIFY_STACK_SIZE=65536
@@ -29,13 +29,13 @@ build/prim_lines.inc: kernel/ef32.c scripts/prim_lines.py
 	mkdir -p build
 	python3 scripts/prim_lines.py kernel/ef32.c build/prim_lines.inc
 
-Resources/Library/Sources/ef32.c: kernel/ef32.c
+Resources/System/Sources/ef32.c: kernel/ef32.c
 	cp kernel/ef32.c $@
 
-Resources/Library/Sources/ef32.h: kernel/ef32.h
+Resources/System/Sources/ef32.h: kernel/ef32.h
 	cp kernel/ef32.h $@
 
-build/editforth: kernel/ef32.c kernel/ef32.h host/main.c build/boot.inc build/prim_lines.inc Resources/Library/Sources/ef32.c Resources/Library/Sources/ef32.h
+build/editforth: kernel/ef32.c kernel/ef32.h host/main.c build/boot.inc build/prim_lines.inc Resources/System/Sources/ef32.c Resources/System/Sources/ef32.h
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ kernel/ef32.c host/main.c
 
 self-test: build/editforth
@@ -50,7 +50,7 @@ web/icon-192.png web/icon-512.png: scripts/make_icon.py
 
 icons: web/icon-192.png web/icon-512.png
 
-wasm: build/boot.inc build/prim_lines.inc web/icon-192.png web/icon-512.png host/web_main.c Resources/Library/Sources/ef32.c Resources/Library/Sources/ef32.h
+wasm: build/boot.inc build/prim_lines.inc web/icon-192.png web/icon-512.png host/web_main.c Resources/System/Sources/ef32.c Resources/System/Sources/ef32.h
 	$(EMCC) $(EMFLAGS) -o web/editforth.js kernel/ef32.c host/web_main.c
 
 wasm-test: wasm

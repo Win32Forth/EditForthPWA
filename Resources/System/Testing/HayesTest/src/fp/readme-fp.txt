@@ -37,7 +37,7 @@ Running the tests
 
 From the 64Forth app (preferred):
 
-      FROMLIB FLOAD HayesTest/HayesTest.fth
+      FROMLIB FLOAD Testing/HayesTest/HayesTest.fth
 
 Or, with cwd = HayesTest/src/:
 

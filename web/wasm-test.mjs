@@ -199,9 +199,9 @@ if (viewMiss !== 0 || !out().includes("undefined: NO-SUCH-VIEWWORD") || views.le
 }
 const viewDup = ev("VIEW DUP");
 const dupLine = views.length === 2 ? views[1].line : 0;
-const csrc = readFileSync(new URL("../Resources/Library/Sources/ef32.c", import.meta.url), "utf8").split("\n");
+const csrc = readFileSync(new URL("../Resources/System/Sources/ef32.c", import.meta.url), "utf8").split("\n");
 const dupText = dupLine > 0 && dupLine <= csrc.length ? csrc[dupLine - 1] : "";
-if (viewDup !== 0 || !out().includes("Resources/Library/Sources/ef32.c:") || views.length !== 2 || views[1].path !== "Resources/Library/Sources/ef32.c" || !dupText.includes("static int p_dup") || depth() !== dirDepth) {
+if (viewDup !== 0 || !out().includes("Resources/System/Sources/ef32.c:") || views.length !== 2 || views[1].path !== "Resources/System/Sources/ef32.c" || !dupText.includes("static int p_dup") || depth() !== dirDepth) {
   die("view dup rc=" + viewDup + " depth=" + depth() + " views=" + JSON.stringify(views) + " line=" + JSON.stringify(dupText) + " out=" + JSON.stringify(out()));
 }
 const sq = ev('S" AB" NIP');
@@ -314,18 +314,18 @@ for (const name of [
   "dbg-map.fth",
   "debug-runto.fth",
 ]) {
-  const text = readFileSync(new URL("../Resources/Library/Debugger/" + name, import.meta.url), "utf8");
-  if (mount("Resources/Library/Debugger/" + name, text) !== 0) {
+  const text = readFileSync(new URL("../Resources/System/Debugger/" + name, import.meta.url), "utf8");
+  if (mount("Resources/System/Debugger/" + name, text) !== 0) {
     die("mount " + name);
   }
 }
-const fromLs = ev("FROMLIB LS");
+const fromLs = ev("FROMLIB LS Debugger");
 const fromLsText = out();
-if (fromLs !== 0 || !fromLsText.includes("Debugger") || !fromLsText.includes("<DIR>") || depth() !== before) {
+if (fromLs !== 0 || !fromLsText.includes("debugger.fth") || depth() !== before) {
   die("fromlib ls " + JSON.stringify(fromLsText));
 }
 const fromCh = ev("FROMLIB CHDIR Debugger");
-if (fromCh !== 0 || !out().includes("Current directory: Resources/Library/Debugger") || depth() !== before) {
+if (fromCh !== 0 || !out().includes("Current directory: Resources/System/Debugger") || depth() !== before) {
   die("fromlib chdir " + JSON.stringify(out()));
 }
 const star = ev("LS *.fth");
@@ -466,6 +466,7 @@ const breakClear = mod.cwrap("ef_web_break_clear", "number", ["string"]);
 const breakEnable = mod.cwrap("ef_web_break_enable", "number", ["string", "number"]);
 const breakList = mod.cwrap("ef_web_breaks", "string", []);
 const breakAsap = mod.cwrap("ef_web_break_asap", "number", []);
+const setSourceLine = mod.cwrap("ef_web_set_source_line", "number", ["number"]);
 const running = mod.cwrap("ef_web_running", "number", []);
 const setYield = mod.cwrap("ef_web_set_yield", null, ["number"]);
 setYield(1);
@@ -516,4 +517,67 @@ if (ev("1 2 +") !== 0 || depth() !== pauseDepth + 1 || item(depth() - 1) !== 3) 
   die("after pause rc depth=" + depth() + " pauseDepth=" + pauseDepth + " out=" + JSON.stringify(out()));
 }
 ev("DROP");
+const conSrc = ": CSPIN 0 begin 1+ dup 40000 > until drop ;\n";
+if (mount("console.fth", conSrc) !== 0 || setSource("console.fth") !== 0 || setSourceLine(1) !== 0) {
+  die("console source");
+}
+if (ev(conSrc) !== 0) {
+  die("console def " + JSON.stringify(out()));
+}
+const conAt = paints.length;
+const conning = evAsync("CSPIN");
+await waitFor(() => running());
+if (breakAsap() !== 0) {
+  die("console pause set");
+}
+await waitFor(() => keyWaiting());
+const conBytes = new TextEncoder().encode(conSrc);
+const conText = paints.slice(conAt)
+  .filter((p) => p.path === "console.fth" && p.len > 0 && p.off >= 0 && p.off + p.len <= conBytes.length)
+  .map((p) => new TextDecoder().decode(conBytes.subarray(p.off, p.off + p.len)));
+if (!conText.some((word) => conSrc.includes(word))) {
+  die("console highlight " + JSON.stringify(paints.slice(conAt)) + " text " + JSON.stringify(conText));
+}
+postKey(27);
+await conning;
+setSource("");
+let pumps = 0;
+mod._forthPump = () => {
+  pumps += 1;
+};
+const paused = await evAsync('." pausemark" cr PAUSE');
+if (paused !== 0 || pumps < 1 || !out().includes("pausemark")) {
+  die("pause rc=" + paused + " pumps=" + pumps + " out=" + JSON.stringify(out()));
+}
+const keyDepth = depth();
+if (await evAsync("KEY?") !== 0 || depth() !== keyDepth + 1 || item(keyDepth) !== 0) {
+  die("key? empty depth=" + depth() + " top=" + item(depth() - 1));
+}
+ev("DROP");
+postKey(65);
+postKey(66);
+if (await evAsync("KEY?") !== 0 || depth() !== keyDepth + 1 || item(keyDepth) !== -1) {
+  die("key? buffered depth=" + depth() + " top=" + item(depth() - 1));
+}
+ev("DROP");
+if (await evAsync("KEY?") !== 0 || item(depth() - 1) !== -1) {
+  die("key? kept the key");
+}
+ev("DROP");
+if (ev("KEY") !== 0 || depth() !== keyDepth + 1 || item(keyDepth) !== 65) {
+  die("key first top=" + item(depth() - 1));
+}
+ev("DROP");
+if (ev("KEY") !== 0 || item(depth() - 1) !== 66) {
+  die("key second top=" + item(depth() - 1));
+}
+ev("DROP");
+if (await evAsync("KEY?") !== 0 || item(depth() - 1) !== 0) {
+  die("key? drained top=" + item(depth() - 1));
+}
+ev("DROP");
+const acceptRc = ev(': ATEST CR ." PLEASE TYPE UP TO 80 CHARACTERS:" CR PAD 40 ACCEPT PAD SWAP TYPE ; ATEST');
+if (acceptRc !== 0 || !out().includes("hayes-accept") || depth() !== keyDepth) {
+  die("hayes accept rc=" + acceptRc + " depth=" + depth() + " out=" + JSON.stringify(out()));
+}
 console.log("wasm-test ok");

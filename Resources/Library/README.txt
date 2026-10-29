@@ -1,14 +1,20 @@
 EditForthPWA library
 ---------------------
-This tree came from EditForth. Library/TCOM, Library/Reference,
-Library/BigInteger, Library/PI, Library/Emitter, Library/Assembler,
-and Library/Hyper are not included. Resources/AutoLoad and Resources/Config
-are not included.
+This tree came from EditForth. Library holds the samples: Benchmarks,
+Classes, Pascal, and Sample. Debugger, Sources, and Testing live in the
+sibling Resources/System folder, as they do in EditForth.
+
+FROMLIB resolves a relative path under Resources/Library. The same word
+finds Assembler, Debugger, Emitter, Hyper, Reference, Sources, and
+Testing under Resources/System. A path written as System/Debugger/… is
+Resources/System/Debugger/….
+
+Library/TCOM, Library/BigInteger, Library/PI, System/Reference,
+System/Emitter, System/Assembler, and System/Hyper are not included.
+Resources/AutoLoad and Resources/Config are not included.
 The ARM64 kernel (forth.s and the boot-word includes) is not included.
 Boot embeds the Forth files in the project's forth/ directory. This
 folder is not loaded at boot. The project README describes what currently runs.
-
-FROMLIB resolves a relative path under Resources/Library.
 
 Examples
 --------

@@ -1,4 +1,4 @@
-import createEditForth from "./editforth.js?v=60";
+import createEditForth from "./editforth.js?v=76";
 
 const log = document.querySelector("#log");
 const installBtn = document.querySelector("#install");
@@ -29,7 +29,7 @@ const DBG_OVER = (2 << 24) | 16;
 const DBG_INTO = (2 << 24) | 17;
 const DBG_OUT = (2 << 24) | 18;
 
-const BANNER = "=== EditForthPWA 0.7.0 === Oct 28, 2026 10:56 PM ===\n";
+const BANNER = "=== EditForthPWA 0.8.0 === Oct 29, 2026 12:48 PM ===\n";
 
 const SEED =
   "\\ Cmd+Enter or Ctrl+Enter loads this file.\n" +
@@ -45,12 +45,12 @@ let resourcePaths = null;
 let resourceIndexTask = null;
 let listSource = "resources";
 const SHIPPED_LIB = [
-  "Resources/Library/Debugger/debugger.fth",
-  "Resources/Library/Debugger/debug-bp.fth",
-  "Resources/Library/Debugger/dbg-pause.fth",
-  "Resources/Library/Debugger/dbg-ed.fth",
-  "Resources/Library/Debugger/dbg-map.fth",
-  "Resources/Library/Debugger/debug-runto.fth",
+  "Resources/System/Debugger/debugger.fth",
+  "Resources/System/Debugger/debug-bp.fth",
+  "Resources/System/Debugger/dbg-pause.fth",
+  "Resources/System/Debugger/dbg-ed.fth",
+  "Resources/System/Debugger/dbg-map.fth",
+  "Resources/System/Debugger/debug-runto.fth",
 ];
 const history = [];
 let historyAt = 0;
@@ -97,7 +97,9 @@ function readLog() {
   let text = "";
   for (const node of log.childNodes) {
     if (node.nodeName === "BR") {
-      text += "\n";
+      if (!node.classList.contains("pad")) {
+        text += "\n";
+      }
     } else if (node.nodeName === "DIV" || node.nodeName === "P") {
       if (text && !text.endsWith("\n")) {
         text += "\n";
@@ -117,7 +119,10 @@ function currentTail() {
 }
 
 function placeCaretEnd() {
-  const node = log.lastChild;
+  let node = log.lastChild;
+  if (node && node.nodeName === "BR") {
+    node = node.previousSibling;
+  }
   if (!node) {
     return;
   }
@@ -149,6 +154,11 @@ function render(tail, moveCaret) {
     frag.appendChild(span);
   }
   frag.appendChild(document.createTextNode(tail || ""));
+  if ((protectedString() + (tail || "")).endsWith("\n")) {
+    const pad = document.createElement("br");
+    pad.className = "pad";
+    frag.appendChild(pad);
+  }
   log.replaceChildren(frag);
   programmatic = false;
   if (moveCaret) {
@@ -647,10 +657,8 @@ async function useFolder(handle) {
 }
 
 function listedPaths() {
-  if (listSource === "resources") {
-    return resourcePaths || [];
-  }
-  return [...files.keys()];
+  const paths = listSource === "resources" ? (resourcePaths || []) : [...files.keys()];
+  return paths.filter((path) => path.split("/").pop() !== ".DS_Store");
 }
 
 function resourceUrl(path) {
@@ -721,6 +729,27 @@ async function setListSource(source) {
   renderTree();
 }
 
+/* Folders the file list is showing. Resources and Docs start open. */
+const openDirs = {
+  resources: new Set(["Resources", "Resources/Docs"]),
+  private: new Set(),
+};
+let revealedPath = "";
+
+function dirOpenSet() {
+  return listSource === "resources" ? openDirs.resources : openDirs.private;
+}
+
+function revealDirs(path) {
+  const parts = path.split("/");
+  const set = dirOpenSet();
+  let prefix = "";
+  for (let i = 0; i < parts.length - 1; i++) {
+    prefix = prefix ? prefix + "/" + parts[i] : parts[i];
+    set.add(prefix);
+  }
+}
+
 function renderTree() {
   const root = { dirs: new Map(), files: [] };
   function nodeFor(path) {
@@ -734,19 +763,40 @@ function renderTree() {
     }
     return { node, leaf: parts[parts.length - 1] };
   }
-  for (const path of listedPaths()) {
+  const paths = listedPaths();
+  for (const path of paths) {
     nodeFor(path).node.files.push(nodeFor(path).leaf);
   }
+  if (currentPath && currentPath !== revealedPath && paths.includes(currentPath)) {
+    revealDirs(currentPath);
+    revealedPath = currentPath;
+  }
+  const scroll = listing.scrollTop;
   listing.replaceChildren();
   function add(node, prefix, depth) {
     const names = [...node.dirs.keys()].sort((a, b) => a.localeCompare(b));
     for (const name of names) {
-      const row = document.createElement("div");
+      const dirPath = prefix ? prefix + "/" + name : name;
+      const open = dirOpenSet().has(dirPath);
+      const row = document.createElement("button");
+      row.type = "button";
       row.className = "dir";
       row.style.paddingLeft = 8 + depth * 14 + "px";
-      row.textContent = name + "/";
+      row.textContent = (open ? "▾ " : "▸ ") + name;
+      row.setAttribute("aria-expanded", open ? "true" : "false");
+      row.addEventListener("click", () => {
+        const set = dirOpenSet();
+        if (set.has(dirPath)) {
+          set.delete(dirPath);
+        } else {
+          set.add(dirPath);
+        }
+        renderTree();
+      });
       listing.appendChild(row);
-      add(node.dirs.get(name), prefix ? prefix + "/" + name : name, depth + 1);
+      if (open) {
+        add(node.dirs.get(name), dirPath, depth + 1);
+      }
     }
     const leaves = node.files.slice().sort((a, b) => a.localeCompare(b));
     for (const name of leaves) {
@@ -768,6 +818,7 @@ function renderTree() {
     }
   }
   add(root, "", 0);
+  listing.scrollTop = scroll;
 }
 
 function currentTab() {
@@ -823,6 +874,39 @@ function pinEditor(top, left) {
   };
   apply();
   requestAnimationFrame(apply);
+}
+
+function tell(message) {
+  const box = document.querySelector("#notice");
+  const ok = document.querySelector("#notice-ok");
+  document.querySelector("#notice-text").textContent = message;
+  box.hidden = false;
+  ok.focus();
+  return new Promise((resolve) => {
+    const finish = () => {
+      ok.removeEventListener("click", finish);
+      box.hidden = true;
+      resolve();
+    };
+    ok.addEventListener("click", finish);
+  });
+}
+
+function sourceName(tab) {
+  return (tab.path || tab.title || "").replaceAll("\\", "/");
+}
+
+function isForthSource(name) {
+  const leaf = name.split("/").pop().toLowerCase();
+  return leaf.endsWith(".fth") || leaf.endsWith(".fs") || leaf.endsWith(".f");
+}
+
+function inSystemFolder(name) {
+  const parts = name.split("/").slice(0, -1);
+  if (parts.some((part) => part.toLowerCase() === "testing")) {
+    return false;
+  }
+  return parts.some((part) => part.toLowerCase() === "system");
 }
 
 function askSave(message) {
@@ -1711,7 +1795,7 @@ function showDebug(path, line, name, off, len) {
     clearHighlight();
     return;
   }
-  const known = files.has(path) ? files.get(path) : (shipped.get(path) ?? null);
+  const known = files.has(path) ? files.get(path) : (shipped.get(path) ?? resourceText.get(path) ?? null);
   if (known == null) {
     return;
   }
@@ -1742,6 +1826,14 @@ function showDebug(path, line, name, off, len) {
     tab.view = true;
     editor.readOnly = true;
     banner.hidden = false;
+  }
+  /* console.fth grows after the tab was opened. Paint against the copy
+     the engine mapped, which is not a private edit. */
+  if (!files.has(path) && editor.value !== known) {
+    editor.value = known;
+    tab.text = known;
+    tab.saved = known;
+    paintLines();
   }
   const text = editor.value;
   let range = utf8Range(text, off, len);
@@ -1984,6 +2076,17 @@ async function loadFile(fresh) {
   if (!ready || busy || (!tab && !fresh)) {
     return;
   }
+  if (!fresh && tab) {
+    const name = sourceName(tab);
+    if (inSystemFolder(name)) {
+      await tell("The files in the System folder are already loading into EditForth.");
+      return;
+    }
+    if (!isForthSource(name)) {
+      await tell("Click Include to load the currently selected source file. Source files must have a file extension of .fth, .fs, or .f.");
+      return;
+    }
+  }
   busy = true;
   refreshStrip();
   try {
@@ -2097,7 +2200,7 @@ document.querySelector("#open-folder").addEventListener("click", async () => {
 
 const Module = await createEditForth({
   locateFile(path, prefix) {
-    return (prefix || "") + path + "?v=60";
+    return (prefix || "") + path + "?v=76";
   },
 });
 Module._forthDebug = (path, line, name, off, len) => {
@@ -2130,6 +2233,7 @@ const api = {
   mountClear: Module.cwrap("ef_web_mount_clear", "number", []),
   mount: Module.cwrap("ef_web_mount", "number", ["string", "string"]),
   setSource: Module.cwrap("ef_web_set_source", "number", ["string"]),
+  setSourceLine: Module.cwrap("ef_web_set_source_line", "number", ["number"]),
   output: Module.cwrap("ef_web_output", "string", []),
   depth: Module.cwrap("ef_web_depth", "number", []),
   bye: Module.cwrap("ef_web_bye", "number", []),
@@ -2222,6 +2326,7 @@ if (resourcesErr) {
 }
 paintSourceSwitch();
 showNone();
+await openShared("Resources/Docs/GettingStarted.txt");
 
 document.querySelector("#load").addEventListener("click", () => loadFile(false));
 document.querySelector("#restart").addEventListener("click", () => loadFile(true));
@@ -2633,6 +2738,16 @@ async function cwdToRoot() {
   }
 }
 
+let consoleSrc = "";
+
+/* Lines typed at the prompt. Pause maps a token back into this text. */
+function rememberConsole(line) {
+  const start = consoleSrc === "" ? 1 : consoleSrc.split("\n").length;
+  consoleSrc += line.endsWith("\n") ? line : line + "\n";
+  shipped.set("console.fth", consoleSrc);
+  return start;
+}
+
 async function submitLine(folderPick, lineOverride) {
   if (!ready || busy) {
     return;
@@ -2669,8 +2784,15 @@ async function submitLine(folderPick, lineOverride) {
       return;
     }
     rememberEditor();
-    syncMount();
-    api.setSource("");
+    if (line !== "") {
+      const start = rememberConsole(line);
+      syncMount();
+      api.setSource("console.fth");
+      api.setSourceLine(start);
+    } else {
+      syncMount();
+      api.setSource("");
+    }
     await runEval(line);
   } catch (err) {
     write("include failed: " + (err && err.message ? err.message : String(err)) + "\n", "err");
@@ -2682,11 +2804,14 @@ async function submitLine(folderPick, lineOverride) {
 }
 
 document.addEventListener("keydown", (event) => {
-  if (!api.keyWaiting() || event.isComposing) {
+  if (event.isComposing || (!api.keyWaiting() && !busy)) {
     return;
   }
   const code = debugCode(event);
   if (code == null) {
+    if (!event.metaKey && !event.ctrlKey && !event.altKey) {
+      event.preventDefault();
+    }
     return;
   }
   event.preventDefault();
@@ -2736,7 +2861,7 @@ log.addEventListener("keydown", (event) => {
   }
 });
 log.addEventListener("beforeinput", (event) => {
-  if (api.keyWaiting()) {
+  if (api.keyWaiting() || busy) {
     event.preventDefault();
     return;
   }

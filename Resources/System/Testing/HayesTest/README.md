@@ -1,41 +1,43 @@
 # forth2012-test-suite
 Test programs for Forth 2012 and ANS Forth
 
-## TZForth packaging
+## EditForthPWA packaging
 
-This suite ships inside the TZForth app as:
+This suite lives at `Resources/System/Testing/HayesTest/`:
 
 ```text
-YourApp.app/Contents/Resources/Library/HayesTest/   (this tree)
-  HayesTest.fth     top-level suite driver (64Forth)
-  src/
-    *.fth           stock ANS/Forth2012 test sources
-    fp/             stock floating-point test sources only
-    Harness/           vendor runners (not test cases)
-      prepare-blocks.fth   writable block volume for blocktest
-      runfptests.fth       loads ../fp/* for 64Forth
-  doc/              docs
+HayesTest.fth     top-level suite driver
+src/
+  *.fth           stock ANS/Forth2012 test sources
+  fp/             stock floating-point test sources only
+  Harness/        vendor runners (not test cases)
+    prepare-blocks.fth   writable block volume for blocktest
+    runfptests.fth       loads ../fp/* 
+doc/              docs
 ```
 
-**In-app run (preferred):**
+**Run:**
 
 ```forth
-FROMLIB FLOAD HayesTest/HayesTest.fth
+FROMLIB FLOAD Testing/HayesTest/HayesTest.fth
 ```
 
-That:
+`FROMLIB` roots `Testing` under `Resources/System`. The driver prints a
+please-wait line and `PAUSE`, then:
 
-1. Runs `src/Harness/prepare-blocks.fth` — selects a **writable** block volume at  
-   `~/Library/Application Support/64Forth/hayes-blocks.blk`  
-   (app bundle `Resources/Library/…` is **read-only**; Hayes `UPDATE`/`FLUSH` need write access).
-2. FLOADs suite sources under `src/`. Floating-point tests go through `src/Harness/runfptests.fth`, which does `ONLY FORTH ALSO FLOATING` and then loads `src/fp/`. The vocabulary name is `FLOATING`. After the core `ACCEPT` line, every counter is 0, including `FPERRORS`.
+1. Runs `src/Harness/prepare-blocks.fth` when `OPEN-BLOCK-FILE` exists.
+   That selects a writable block volume at
+   `~/Library/Application Support/64Forth/hayes-blocks.blk`.
+2. Loads the suite sources under `src/`. Floating-point tests go through
+   `src/Harness/runfptests.fth`, which does `ONLY FORTH ALSO FLOATING`
+   and then loads `src/fp/`. The vocabulary name is `FLOATING`. After
+   the core `ACCEPT` line, every counter is 0, including `FPERRORS`.
 
-**ACCEPT auto-feed (host):** stock `core.fr` still prints `PLEASE TYPE UP TO 80 CHARACTERS:` and calls `ACCEPT`. The host (`KernelBridge`) watches emit for that prompt and queues `hayes-accept` + Return into the KEY queue (same path as debugger `pushKey`). Suite sources are not modified. Obsolescent `EXPECT` is not run by this suite.
-
-**Writable scratch files:** File-Access tests create `fatest*.txt` relative to the load
-cwd. When that cwd is inside the app bundle, TZForth automatically maps those names to
-`Application Support/TZForth/` so `CREATE-FILE`/`OPEN-FILE`/`RENAME-FILE` succeed.
-Suite sources (`required-helper*.fth`, etc.) still load from `Resources/Library/…`.
+**ACCEPT auto-feed:** stock `src/core.fr` still prints
+`PLEASE TYPE UP TO 80 CHARACTERS:` and calls `ACCEPT`. The page watches
+emit for that prompt and queues `hayes-accept` and Return. EditForth
+does the same in its host. `core.fr` is not modified. `EXPECT` is not
+run by this suite.
 
 Baseline transcript: `src/HAYES-RESULTS.txt`.
 

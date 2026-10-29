@@ -31,6 +31,8 @@ typedef struct ef_vm ef_vm;
 typedef void (*ef_emit_fn)(void *ctx, int ch);
 /* Next key event, or -1 if none. KEY keeps the low 8 bits. EKEY keeps the cell. */
 typedef int (*ef_key_fn)(void *ctx);
+/* Nonzero when a key is buffered. Does not consume it. */
+typedef int (*ef_keyq_fn)(void *ctx);
 /* Debug pause location. An empty path clears the editor wash.
    off/len are file-relative UTF-8 bytes; len 0 means search by name. */
 typedef void (*ef_debug_fn)(void *ctx, const char *path, int line, const char *name, int off, int len);
@@ -44,6 +46,7 @@ void ef_destroy(ef_vm *vm);
 
 void ef_set_emit(ef_vm *vm, ef_emit_fn fn, void *ctx);
 void ef_set_key(ef_vm *vm, ef_key_fn fn, void *ctx);
+void ef_set_key_q(ef_vm *vm, ef_keyq_fn fn, void *ctx);
 void ef_set_debug(ef_vm *vm, ef_debug_fn fn, void *ctx);
 void ef_set_view(ef_vm *vm, ef_view_fn fn, void *ctx);
 void ef_set_fetch(ef_vm *vm, ef_fetch_fn fn, void *ctx);
@@ -69,6 +72,8 @@ int ef_mount_file(ef_vm *vm, const char *path, const char *text);
 /* Name used for error locations, and as the directory for a relative INCLUDE.
    An empty name clears it. */
 int ef_set_source(ef_vm *vm, const char *name);
+/* Next ef_eval starts at this 1-based line of the current source name. */
+int ef_set_source_line(ef_vm *vm, int line);
 int ef_error_line(const ef_vm *vm);
 const char *ef_error_name(const ef_vm *vm);
 

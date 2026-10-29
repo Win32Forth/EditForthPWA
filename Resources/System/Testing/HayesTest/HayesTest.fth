@@ -17,6 +17,9 @@
 \ Cleaner transcripts: FILE-ECHO ON dumps every source line (and ERROR + SOURCE
 \ TYPE would re-dump whole INCLUDE buffers). Leave OFF unless debugging.
 
+.( Loading Hayes Tests... This can take a while, please wait.. ) CR
+PAUSE
+
 FLOAD src/debug-bootstrap.fth
 TRUE VERBOSE !
 

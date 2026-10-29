@@ -1,4 +1,4 @@
-64Forth Library/Debugger
+64Forth System/Debugger
 ========================
 
 High-level ITC DEBUG support that does not belong in the kernel cold blob.
