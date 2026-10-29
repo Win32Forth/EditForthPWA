@@ -1,4 +1,4 @@
-import createEditForth from "./editforth.js?v=59";
+import createEditForth from "./editforth.js?v=60";
 
 const log = document.querySelector("#log");
 const installBtn = document.querySelector("#install");
@@ -2097,7 +2097,7 @@ document.querySelector("#open-folder").addEventListener("click", async () => {
 
 const Module = await createEditForth({
   locateFile(path, prefix) {
-    return (prefix || "") + path + "?v=59";
+    return (prefix || "") + path + "?v=60";
   },
 });
 Module._forthDebug = (path, line, name, off, len) => {

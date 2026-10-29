@@ -1,5 +1,5 @@
 /* Network first, so a rebuilt wasm is picked up. The cache covers a later offline open. */
-const CACHE = "editforthpwa-59";
+const CACHE = "editforthpwa-60";
 
 self.addEventListener("install", (event) => {
   event.waitUntil(self.skipWaiting());

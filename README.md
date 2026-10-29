@@ -38,7 +38,7 @@ The page cache is named in `web/sw.js`. After a rebuild, reload the page so the 
 
 ## Editor
 
-The window is white (`#ffffff`) with black text (`#111111`). Include is a black button. Errors are `#9b1c1c`.
+The window is white (`#ffffff`) with black text (`#111111`). The title bar reads `EditForth 0.7.0`. Include is a black button. Errors are `#9b1c1c`.
 
 The bar between the source and the console drags. Dragging up gives the console more room. The height is remembered (`editforth.consoleHeight`). The console stays under the source. There is no undock. The bar on the right of the file list drags sideways. The list starts at 220px, and the width is remembered (`editforth.treeWidth`). Save sits with New and Share. Close is the tab’s own button.
 
