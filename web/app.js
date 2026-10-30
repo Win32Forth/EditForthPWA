@@ -1,4 +1,4 @@
-import createEditForth from "./editforth.js?v=76";
+import createEditForth from "./editforth.js?v=86";
 
 const log = document.querySelector("#log");
 const installBtn = document.querySelector("#install");
@@ -6,6 +6,9 @@ const editor = document.querySelector("#editor");
 const editorPane = document.querySelector("#editor-pane");
 const hl = document.querySelector("#hl");
 const tabsEl = document.querySelector("#tabs");
+const findBar = document.querySelector("#find-bar");
+const findInput = document.querySelector("#find-input");
+const findToggle = document.querySelector("#find-toggle");
 const banner = document.querySelector("#banner");
 const saveBtn = document.querySelector("#save");
 const shareBtn = document.querySelector("#share-file");
@@ -29,7 +32,7 @@ const DBG_OVER = (2 << 24) | 16;
 const DBG_INTO = (2 << 24) | 17;
 const DBG_OUT = (2 << 24) | 18;
 
-const BANNER = "=== EditForthPWA 0.8.0 === Oct 29, 2026 12:48 PM ===\n";
+const BANNER = "=== EditForthPWA 0.9.0 === Oct 29, 2026 8:09 PM ===\n";
 
 const SEED =
   "\\ Cmd+Enter or Ctrl+Enter loads this file.\n" +
@@ -826,7 +829,7 @@ function currentTab() {
 }
 
 function bufferOf(tab) {
-  if (!tab) {
+  if (!tab || tab.web) {
     return "";
   }
   if (tab.id === currentId) {
@@ -846,7 +849,7 @@ function bufferOf(tab) {
 
 function rememberEditor() {
   const tab = currentTab();
-  if (!tab) {
+  if (!tab || tab.web) {
     return;
   }
   if (tab.path && files.has(tab.path)) {
@@ -1053,21 +1056,21 @@ async function saveDirty(tab) {
 
 function updateSaveButton() {
   const tab = currentTab();
-  saveBtn.disabled = !tab;
-  shareBtn.disabled = !tab;
+  saveBtn.disabled = !tab || tab.web;
+  shareBtn.disabled = !tab || tab.web;
 }
 
 function renderTabs() {
   tabsEl.replaceChildren();
   for (const tab of tabs) {
-    const leaf = tab.path ? tab.path.split("/").pop() : tab.title;
-    const dup = tab.path && tabs.filter((item) => item.path && item.path.split("/").pop() === leaf).length > 1;
+    const leaf = tab.web ? tab.title : (tab.path ? tab.path.split("/").pop() : tab.title);
+    const dup = !tab.web && tab.path && tabs.filter((item) => item.path && item.path.split("/").pop() === leaf).length > 1;
     const chip = document.createElement("div");
     chip.className = "tab" + (tab.id === currentId ? " active" : "");
     const select = document.createElement("button");
     select.type = "button";
     select.className = "tab-name";
-    const dirty = bufferOf(tab) !== tab.saved;
+    const dirty = !tab.web && bufferOf(tab) !== tab.saved;
     select.textContent = (dirty ? "• " : "") + (dup ? tab.path : leaf);
     select.title = tab.path || tab.title;
     select.addEventListener("click", () => {
@@ -1088,6 +1091,84 @@ function renderTabs() {
   }
 }
 
+function setFind(open) {
+  findBar.hidden = !open;
+  findToggle.setAttribute("aria-pressed", open ? "true" : "false");
+  if (!open) {
+    findInput.classList.remove("miss");
+    if (document.activeElement === findInput) {
+      editor.focus();
+    }
+    return;
+  }
+  const tab = currentTab();
+  if (tab && !tab.web && editor.selectionStart !== editor.selectionEnd) {
+    const sel = editor.value.slice(editor.selectionStart, editor.selectionEnd);
+    if (sel && !sel.includes("\n")) {
+      findInput.value = sel;
+    }
+  }
+  findInput.focus();
+  findInput.select();
+}
+
+function revealMatch(start) {
+  const style = getComputedStyle(editor);
+  const lineHeight = parseFloat(style.lineHeight) || 21;
+  const padTop = parseFloat(style.paddingTop) || 0;
+  const padLeft = parseFloat(style.paddingLeft) || 0;
+  const line = editor.value.slice(0, start).split("\n").length - 1;
+  const top = padTop + line * lineHeight;
+  if (top < editor.scrollTop || top > editor.scrollTop + editor.clientHeight - lineHeight) {
+    editor.scrollTop = Math.max(0, top - editor.clientHeight / 3);
+  }
+  const lineStart = editor.value.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+  const col = start - lineStart;
+  const charWidth = (parseFloat(style.fontSize) || 15) * 0.6;
+  const left = padLeft + col * charWidth;
+  if (left < editor.scrollLeft || left > editor.scrollLeft + editor.clientWidth - charWidth) {
+    editor.scrollLeft = Math.max(0, left - editor.clientWidth / 4);
+  }
+}
+
+function findInEditor(forward) {
+  findInput.classList.remove("miss");
+  const tab = currentTab();
+  const needle = findInput.value;
+  if (!needle || !tab || tab.web) {
+    findInput.classList.add("miss");
+    return;
+  }
+  const text = editor.value;
+  let at = -1;
+  if (forward) {
+    at = text.indexOf(needle, editor.selectionEnd);
+    if (at < 0) {
+      at = text.indexOf(needle);
+    }
+  } else {
+    at = text.lastIndexOf(needle, Math.max(0, editor.selectionStart - 1));
+    if (at < 0) {
+      at = text.lastIndexOf(needle);
+    }
+  }
+  if (at < 0) {
+    findInput.classList.add("miss");
+    tab.findStart = null;
+    tab.findEnd = null;
+    paintFindMark();
+    return;
+  }
+  const end = at + needle.length;
+  editor.setSelectionRange(at, end);
+  revealMatch(at);
+  tab.selStart = at;
+  tab.selEnd = end;
+  tab.findStart = at;
+  tab.findEnd = end;
+  paintFindMark();
+}
+
 function leaveView() {
   const tab = currentTab();
   if (!tab) {
@@ -1098,6 +1179,7 @@ function leaveView() {
   banner.hidden = true;
   paintModeMenu();
   editor.focus();
+  paintFindMark();
 }
 
 function paintModeMenu() {
@@ -1106,7 +1188,7 @@ function paintModeMenu() {
   if (!item) {
     return;
   }
-  if (!tab) {
+  if (!tab || tab.web) {
     item.disabled = true;
     item.textContent = "Read Only";
     return;
@@ -1191,6 +1273,12 @@ function toggleReadOnly() {
 }
 
 function showTab(tab, opts) {
+  if (tab.web) {
+    showWebTab(tab);
+    return;
+  }
+  document.querySelector("#web-tab").hidden = true;
+  document.querySelector("#editor-row").hidden = false;
   if (opts && opts.view === true) {
     tab.view = true;
   }
@@ -1225,11 +1313,14 @@ function showTab(tab, opts) {
   editor.focus({ preventScroll: true });
   editor.setSelectionRange(start, end);
   pinEditor(tab.scrollTop ?? 0, tab.scrollLeft ?? 0);
+  paintFindMark();
 }
 
 function showNone() {
   currentId = 0;
   currentPath = "";
+  document.querySelector("#web-tab").hidden = true;
+  document.querySelector("#editor-row").hidden = false;
   clearHighlight();
   editor.value = "";
   editor.readOnly = true;
@@ -1358,7 +1449,9 @@ async function closeTab(id) {
     return;
   }
   const label = tab.path || tab.title;
-  if (bufferOf(tab) !== tab.saved) {
+  if (tab.web) {
+    tab.frame.remove();
+  } else if (bufferOf(tab) !== tab.saved) {
     const choice = await askSave("Save changes to " + label + " before closing?");
     if (choice === "cancel") {
       return;
@@ -1417,7 +1510,7 @@ function paintLines() {
 
 function syncGutter() {
   gutterInner.style.transform = "translateY(" + (-editor.scrollTop) + "px)";
-  if (editorPane.classList.contains("debugging")) {
+  if (editorPane.classList.contains("debugging") || editorPane.classList.contains("finding")) {
     hl.scrollTop = editor.scrollTop;
     hl.scrollLeft = editor.scrollLeft;
   }
@@ -1426,6 +1519,37 @@ function syncGutter() {
 function clearHighlight() {
   hl.replaceChildren();
   editorPane.classList.remove("debugging");
+  editorPane.classList.remove("finding");
+}
+
+function paintFindMark() {
+  const tab = currentTab();
+  editorPane.classList.remove("finding");
+  if (editorPane.classList.contains("debugging")) {
+    return;
+  }
+  const needle = findInput.value;
+  if (!tab || tab.web || !needle || tab.findStart == null || tab.findEnd == null) {
+    hl.replaceChildren();
+    return;
+  }
+  const text = editor.value;
+  const start = tab.findStart;
+  const end = tab.findEnd;
+  if (start < 0 || end > text.length || text.slice(start, end) !== needle) {
+    hl.replaceChildren();
+    return;
+  }
+  hl.replaceChildren();
+  hl.append(document.createTextNode(text.slice(0, start)));
+  const mark = document.createElement("mark");
+  mark.className = "find-hit";
+  mark.textContent = text.slice(start, end);
+  hl.append(mark);
+  hl.append(document.createTextNode(text.slice(end)));
+  editorPane.classList.add("finding");
+  hl.scrollTop = editor.scrollTop;
+  hl.scrollLeft = editor.scrollLeft;
 }
 
 function isForthSpace(ch) {
@@ -1595,9 +1719,10 @@ let lastWash = null;
 function refreshStrip() {
   const paused = Boolean(api && api.keyWaiting && api.keyWaiting());
   const lock = !ready || busy || paused;
-  document.querySelector("#load").disabled = lock;
+  const web = Boolean(currentTab() && currentTab().web);
+  document.querySelector("#load").disabled = lock || web;
   document.querySelector("#restart").disabled = lock;
-  document.querySelector("#run").disabled = lock;
+  document.querySelector("#run").disabled = lock || web;
   document.querySelector("#pause").disabled = !ready;
   const stepping = Boolean(debugStatus.textContent);
   stepActions.hidden = !stepping;
@@ -2076,6 +2201,9 @@ async function loadFile(fresh) {
   if (!ready || busy || (!tab && !fresh)) {
     return;
   }
+  if (!fresh && tab && tab.web) {
+    return;
+  }
   if (!fresh && tab) {
     const name = sourceName(tab);
     if (inSystemFolder(name)) {
@@ -2161,19 +2289,275 @@ menuPanel.addEventListener("click", (event) => {
   event.stopPropagation();
 });
 document.addEventListener("click", () => setMenu(false));
+const FORTH_STANDARD = "https://forth-standard.org/";
+const webTabBox = document.querySelector("#web-tab");
+const webFrames = document.querySelector("#web-frames");
+const webAddress = document.querySelector("#web-address");
+const webBack = document.querySelector("#web-back");
+const webForward = document.querySelector("#web-forward");
+const webGo = document.querySelector("#web-go");
+const webReload = document.querySelector("#web-reload");
+const webProgress = document.querySelector("#web-progress");
+
+function urlForAddressField(raw) {
+  const text = raw.trim();
+  if (!text) {
+    return "";
+  }
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(text);
+  if (scheme) {
+    const name = scheme[1].toLowerCase();
+    if (name === "http" || name === "https" || name === "about") {
+      return text;
+    }
+    return "";
+  }
+  if (!/\s/.test(text) && (text === "localhost" || text.startsWith("localhost:") || text.startsWith("127.0.0.1") || (text.includes(".") && !(text.endsWith(".") && text.split(".").length === 2)))) {
+    return "https://" + text;
+  }
+  return "https://duckduckgo.com/?q=" + encodeURIComponent(text);
+}
+
+function webHost(url) {
+  try {
+    return new URL(url).host || "Web";
+  } catch (err) {
+    return "Web";
+  }
+}
+
+function paintWebChrome(tab) {
+  const live = tab && tab.id === currentId;
+  if (live) {
+    if (document.activeElement !== webAddress) {
+      webAddress.value = tab.address;
+    }
+    where.textContent = tab.address;
+    where.className = "";
+  }
+  webBack.disabled = !live;
+  webForward.disabled = !live;
+  webGo.disabled = !webAddress.value.trim();
+  webProgress.hidden = !live || !tab.loading;
+}
+
+function showWebFrames(tab) {
+  for (const item of tabs) {
+    if (item.web) {
+      item.frame.hidden = item.id !== tab.id;
+    }
+  }
+}
+
+function showWebTab(tab) {
+  currentId = tab.id;
+  currentPath = "";
+  clearHighlight();
+  document.querySelector("#editor-row").hidden = true;
+  webTabBox.hidden = false;
+  banner.hidden = true;
+  showWebFrames(tab);
+  paintLines();
+  renderTabs();
+  renderTree();
+  updateSaveButton();
+  paintModeMenu();
+  refreshStrip();
+  paintWebChrome(tab);
+  if (tab.focusAddress) {
+    tab.focusAddress = false;
+    webAddress.focus();
+    webAddress.select();
+  }
+}
+
+function loadWeb(tab, url, record) {
+  if (!url) {
+    return;
+  }
+  if (record) {
+    if (tab.history[tab.index] !== url) {
+      tab.history = tab.history.slice(0, tab.index + 1);
+      tab.history.push(url);
+      tab.index = tab.history.length - 1;
+    }
+  }
+  tab.address = url;
+  tab.title = webHost(url);
+  tab.loading = true;
+  paintWebChrome(tab);
+  renderTabs();
+  tab.frame.src = url;
+}
+
+function onWebLoad(tab) {
+  tab.loading = false;
+  try {
+    const href = tab.frame.contentWindow.location.href;
+    if (href && href !== "about:blank") {
+      if (tab.history[tab.index] !== href) {
+        tab.history = tab.history.slice(0, tab.index + 1);
+        tab.history.push(href);
+        tab.index = tab.history.length - 1;
+      }
+      tab.address = href;
+      const title = tab.frame.contentDocument && tab.frame.contentDocument.title;
+      if (title && title.trim()) {
+        tab.title = title.trim();
+      } else {
+        tab.title = webHost(href);
+      }
+    }
+  } catch (err) {
+    tab.title = webHost(tab.address);
+  }
+  if (tab.id === currentId) {
+    paintWebChrome(tab);
+    renderTabs();
+  }
+}
+
+function openWebPage() {
+  setMenu(false);
+  const existing = tabs.find((tab) => tab.web && tab.history[tab.index] === FORTH_STANDARD);
+  if (existing) {
+    rememberEditor();
+    existing.focusAddress = true;
+    showTab(existing);
+    return;
+  }
+  rememberEditor();
+  const frame = document.createElement("iframe");
+  frame.title = "Web page";
+  frame.hidden = true;
+  frame.setAttribute("referrerpolicy", "no-referrer-when-downgrade");
+  frame.setAttribute("sandbox", "allow-forms allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-downloads");
+  webFrames.append(frame);
+  const tab = {
+    id: nextTabId++,
+    web: true,
+    path: "",
+    title: webHost(FORTH_STANDARD),
+    saved: "",
+    view: true,
+    text: "",
+    frame,
+    history: [FORTH_STANDARD],
+    index: 0,
+    address: FORTH_STANDARD,
+    loading: true,
+    focusAddress: true,
+  };
+  frame.addEventListener("load", () => onWebLoad(tab));
+  tabs.push(tab);
+  showTab(tab);
+  frame.src = FORTH_STANDARD;
+}
+
+function goWebAddress() {
+  const tab = currentTab();
+  if (!tab || !tab.web) {
+    return;
+  }
+  tab.address = webAddress.value;
+  const url = urlForAddressField(tab.address);
+  if (!url) {
+    return;
+  }
+  loadWeb(tab, url, true);
+}
+
+webBack.addEventListener("click", () => {
+  const tab = currentTab();
+  if (!tab || !tab.web) {
+    return;
+  }
+  window.history.back();
+});
+webForward.addEventListener("click", () => {
+  const tab = currentTab();
+  if (!tab || !tab.web) {
+    return;
+  }
+  window.history.forward();
+});
+webGo.addEventListener("click", () => goWebAddress());
+webReload.addEventListener("click", () => {
+  const tab = currentTab();
+  if (!tab || !tab.web) {
+    return;
+  }
+  const url = tab.history[tab.index];
+  tab.loading = true;
+  paintWebChrome(tab);
+  try {
+    tab.frame.contentWindow.location.reload();
+  } catch (err) {
+    tab.frame.src = "about:blank";
+    tab.frame.src = url;
+  }
+});
+webAddress.addEventListener("input", () => {
+  const tab = currentTab();
+  if (tab && tab.web) {
+    tab.address = webAddress.value;
+  }
+  webGo.disabled = !webAddress.value.trim();
+});
+webAddress.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    goWebAddress();
+  }
+});
+
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !menuPanel.hidden) {
     setMenu(false);
     menuBtn.focus();
   }
+  if ((event.metaKey || event.ctrlKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === "l") {
+    event.preventDefault();
+    openWebPage();
+  }
+  if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "f") {
+    event.preventDefault();
+    setFind(true);
+  }
+  if (!findBar.hidden && event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey &&
+      (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+    event.preventDefault();
+    findInEditor(event.key === "ArrowRight");
+  }
 });
 
+findToggle.addEventListener("click", () => setFind(findBar.hidden));
+document.querySelector("#find-prev").addEventListener("click", () => findInEditor(false));
+document.querySelector("#find-next").addEventListener("click", () => findInEditor(true));
+findInput.addEventListener("input", () => {
+  findInput.classList.remove("miss");
+  const tab = currentTab();
+  if (tab && !tab.web) {
+    tab.findStart = null;
+    tab.findEnd = null;
+  }
+  paintFindMark();
+});
+findInput.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    setFind(false);
+  }
+});
 document.querySelector("#show-boot").addEventListener("click", () => {
   setMenu(false);
   if (bootLog) {
     write(bootLog);
   }
 });
+
+document.querySelector("#open-web").addEventListener("click", () => openWebPage());
 
 document.querySelector("#open-folder").addEventListener("click", async () => {
   setMenu(false);
@@ -2200,7 +2584,7 @@ document.querySelector("#open-folder").addEventListener("click", async () => {
 
 const Module = await createEditForth({
   locateFile(path, prefix) {
-    return (prefix || "") + path + "?v=76";
+    return (prefix || "") + path + "?v=86";
   },
 });
 Module._forthDebug = (path, line, name, off, len) => {
@@ -2388,7 +2772,7 @@ document.addEventListener("keydown", (event) => {
   if (!ready || busy || api.keyWaiting() || event.isComposing) {
     return;
   }
-  if (event.target && (event.target.id === "name-input")) {
+  if (event.target && (event.target.id === "name-input" || event.target.id === "web-address" || event.target.id === "find-input" || event.target.id === "find-prev" || event.target.id === "find-next")) {
     return;
   }
   if (event.key === "F4" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
@@ -2397,6 +2781,9 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (event.key === "F5") {
+    if (currentTab() && currentTab().web) {
+      return;
+    }
     const kind = runKind(event);
     if (kind) {
       event.preventDefault();
@@ -2440,12 +2827,26 @@ nameInput.addEventListener("keydown", (event) => {
     cancelSaveAs();
   }
 });
+editor.addEventListener("pointerdown", () => {
+  const tab = currentTab();
+  if (!tab || tab.web || tab.view) {
+    return;
+  }
+  tab.findStart = null;
+  tab.findEnd = null;
+  paintFindMark();
+});
 editor.addEventListener("scroll", syncGutter);
 editor.addEventListener("input", () => {
+  const editing = currentTab();
+  if (editing && !editing.web) {
+    editing.findStart = null;
+    editing.findEnd = null;
+  }
   clearHighlight();
   paintLines();
   const tab = currentTab();
-  if (!tab) {
+  if (!tab || tab.web) {
     return;
   }
   if (tab.path && files.has(tab.path)) {

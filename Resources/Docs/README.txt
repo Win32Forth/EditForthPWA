@@ -4,6 +4,7 @@ These notes describe the browser Forth in this tree. Cells are 4 bytes.
 The engine is kernel/ef32.c. The project README is the status of the page.
 
 GettingStarted.txt  Wait for ok(0)>, open HELLO.fth, Include, type HELLO.
+Changes.txt         Feature history of each release, from the commits.
 ANS.md              Word sets checked by the Hayes subset and ANS-VALIDATE.
 THROW-CODES.md      Throw codes this image uses.
 

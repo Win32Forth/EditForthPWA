@@ -202,14 +202,56 @@
       display: flex;
       flex-direction: column;
     }
-    #tabs {
+    #tab-bar {
       flex: none;
       display: flex;
-      overflow-x: auto;
+      align-items: stretch;
       background: #f3f3f3;
       border-bottom: 1px solid #d0d0d0;
     }
+    #tabs {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      overflow-x: auto;
+    }
     #tabs:empty { display: none; }
+    #find-toggle {
+      flex: none;
+      margin-left: auto;
+      border: 0;
+      border-left: 1px solid #d0d0d0;
+      background: transparent;
+      cursor: pointer;
+      padding: 6px 12px;
+    }
+    #find-toggle[aria-pressed="true"] { background: #ffffff; }
+    #find-bar {
+      flex: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      background: #f7f7f7;
+      border-bottom: 1px solid #d0d0d0;
+    }
+    #find-bar[hidden] { display: none; }
+    #find-bar button {
+      background: #ffffff;
+      border: 1px solid #b0b0b0;
+      border-radius: 6px;
+      padding: 4px 8px;
+      cursor: pointer;
+    }
+    #find-input {
+      flex: 1;
+      min-width: 0;
+      border: 1px solid #b0b0b0;
+      border-radius: 6px;
+      padding: 4px 8px;
+      background: #ffffff;
+    }
+    #find-input.miss { border-color: #9b1c1c; }
     .tab {
       display: flex;
       align-items: stretch;
@@ -250,6 +292,60 @@
       display: flex;
       flex-direction: row;
     }
+    #editor-row[hidden] { display: none; }
+    #web-tab {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      background: #ffffff;
+    }
+    #web-tab[hidden] { display: none; }
+    #web-bar {
+      flex: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      background: #f7f7f7;
+      border-bottom: 1px solid #d0d0d0;
+    }
+    #web-bar button {
+      background: #ffffff;
+      border: 1px solid #b0b0b0;
+      border-radius: 6px;
+      padding: 4px 10px;
+      cursor: pointer;
+    }
+    #web-back, #web-forward, #web-reload { padding: 4px 8px; }
+    #web-address {
+      flex: 1;
+      min-width: 0;
+      border: 1px solid #b0b0b0;
+      border-radius: 6px;
+      padding: 4px 8px;
+      background: #ffffff;
+    }
+    #web-progress {
+      flex: none;
+      height: 2px;
+      background: #111111;
+    }
+    #web-progress[hidden] { display: none; }
+    #web-frames {
+      flex: 1;
+      min-height: 0;
+      position: relative;
+    }
+    #web-frames iframe {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      border: 0;
+      background: #ffffff;
+    }
+    #web-frames iframe[hidden] { display: none; }
     #editor-pane {
       position: relative;
       flex: 1;
@@ -270,13 +366,19 @@
       padding: 12px 14px;
       font: var(--ui-font);
     }
-    #editor-pane.debugging #hl { display: block; }
-    #editor-pane.debugging #editor {
+    #editor-pane.debugging #hl,
+    #editor-pane.finding #hl { display: block; }
+    #editor-pane.debugging #editor,
+    #editor-pane.finding #editor {
       background: transparent;
       color: transparent;
     }
     #hl mark {
       background: rgba(52, 199, 89, 0.35);
+      color: #111111;
+    }
+    #hl mark.find-hit {
+      background: #ffe08a;
       color: #111111;
     }
     #gutter {
@@ -485,10 +587,11 @@
       <div id="menu-panel" role="menu" hidden>
         <button id="open-folder" type="button" role="menuitem">Open Folder</button>
         <button id="show-boot" type="button" role="menuitem">Show boot messages</button>
+        <button id="open-web" type="button" role="menuitem">Open Web Page</button>
         <button id="toggle-readonly" type="button" role="menuitem" disabled>Read Only</button>
       </div>
     </div>
-    <h1>EditForth 0.8.0</h1>
+    <h1>EditForth 0.9.0</h1>
     <span id="folder"></span>
     <span id="where"></span>
     <span class="spacer"></span>
@@ -514,7 +617,15 @@
     <div id="tree-split" role="separator" aria-orientation="vertical" aria-label="Resize file list" aria-controls="tree" tabindex="0" title="Drag to resize the file list"></div>
     <div id="main">
       <section id="edit">
-        <div id="tabs"></div>
+        <div id="tab-bar">
+          <div id="tabs"></div>
+          <button id="find-toggle" type="button" aria-pressed="false" title="Find in this file. Cmd+F opens it. Cmd+Right finds the next match. Cmd+Left finds the previous.">Find</button>
+        </div>
+        <div id="find-bar" hidden>
+          <input id="find-input" type="text" placeholder="Find" aria-label="Find in this file" spellcheck="false" autocomplete="off">
+          <button id="find-prev" type="button" title="Previous match (Cmd+Left)" aria-label="Previous match">‹</button>
+          <button id="find-next" type="button" title="Next match (Cmd+Right)" aria-label="Next match">›</button>
+        </div>
         <div id="banner" hidden>
           <strong>View mode</strong>
           <span id="banner-note">Read-only — typing asks to switch to Edit</span>
@@ -527,6 +638,17 @@
             <pre id="hl" aria-hidden="true"></pre>
             <textarea id="editor" wrap="off" spellcheck="false" autocomplete="off" aria-label="Forth source"></textarea>
           </div>
+        </div>
+        <div id="web-tab" hidden>
+          <div id="web-bar">
+            <button id="web-back" type="button" title="Back" aria-label="Back" disabled>‹</button>
+            <button id="web-forward" type="button" title="Forward" aria-label="Forward" disabled>›</button>
+            <input id="web-address" type="text" placeholder="Search or enter address" aria-label="Search or enter address" spellcheck="false" autocomplete="off">
+            <button id="web-go" type="button" title="Open the address, or search when the field is not a URL">Go</button>
+            <button id="web-reload" type="button" title="Reload" aria-label="Reload">↻</button>
+          </div>
+          <div id="web-progress" hidden></div>
+          <div id="web-frames"></div>
         </div>
       </section>
       <div id="split" role="separator" aria-orientation="horizontal" aria-label="Resize console" aria-controls="console" tabindex="0" title="Drag to resize the console"></div>
@@ -583,6 +705,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="app.js?v=76"></script>
+  <script type="module" src="app.js?v=86"></script>
 </body>
 </html>

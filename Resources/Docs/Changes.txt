@@ -1,0 +1,65 @@
+EditForthPWA changes
+--------------------
+
+This is the feature history from the commits on main, starting with the
+first checkin. The hash is the GitHub commit. 0.9.0 is the current release.
+
+0.9.0  Oct 29, 2026
+  Open Web Page is in the three-line menu. It opens
+  https://forth-standard.org/ as a tab in the editor. The bar has Back,
+  Forward, an address field, Go, and Reload. A field that is not a URL
+  searches DuckDuckGo. Cmd+Shift+L and Ctrl+Shift+L open the same tab.
+  Back and Forward use the same history as the browser's Back and
+  Forward buttons.
+  Find sits at the right of the file tabs and opens a field under that
+  bar. The previous and next arrows are at the right end of the field.
+  Command+Left and Command+Right move through matches. Cmd+F and Ctrl+F
+  open the field. The match is marked in yellow in the file, in edit
+  mode and in view mode.
+
+0.8.0  Oct 29, 2026  6ec7a0a
+  Debugger, Sources, and Testing moved under Resources/System. Startup
+  opens GettingStarted.txt. The page feeds the Hayes ACCEPT prompt, and
+  the long suites print a wait line first.
+
+0.7.0  Oct 28, 2026  eb7969a
+  Floating-point math uses IEEE doubles on a separate stack of 16.
+  Hayes finishes with every counter at 0, and ANS-VALIDATE finishes
+  with no error. Docs keep only the current notes.
+  b5d1ff4 shows 0.7.0 in the title bar. The console banner already
+  had the version.
+
+0.6.0  Oct 28, 2026  c813931
+  The debugger loads at the end of cold boot. Include, Restart, RUN,
+  and Pause sit between the editor and the console. VIEW opens C
+  primitives from the Sources copy of ef32.c. Assembler, Hyper,
+  AutoLoad, and Config are gone.
+  Hayes Core through the Block word set finish with an empty error
+  count. File words accept a space. A relative include may contain ..
+  and cannot climb out of the including directory. Floating-point words
+  still throw -21 after ttester.fs opens.
+
+0.5.0  Oct 28, 2026  aee104d
+  Resources files open read only. Edit copies one into private storage,
+  including when Open Folder points at the library and when an iPad
+  uses the Mac address. Share uses the system sheet, then a save
+  picker, then a download. Files close from their tabs.
+  06cfad7 publishes the page with GitHub Pages. The site is the web
+  folder plus a real copy of Resources. Each folder gets a listing
+  page so the Resources button can read the tree.
+
+Before the numbered releases, Oct 27–28, 2026
+  cb62f25 adds EditForthPWA, a 32-bit browser Forth editor. The page
+  is the editor and the console. Boot embeds the forth/ sources through
+  ef-hooks.fth. Library/TCOM and the ARM64 kernel sources are not part
+  of this port.
+  545fe43 drops Reference, BigInteger, PI, and Emitter from the library.
+  832efc1 adds editor tabs, explicit save, and a console debugger.
+  Startup leaves no file open. Include runs the editor buffer and does
+  not write it. Restart only boots. Save writes, and closing a changed
+  file asks first. The page steps with KEY and EKEY. CHDIR, CLS, 2!,
+  and SAVE-INPUT are in the engine.
+  efb8751 tracks the page engine and ships the debugger source wash.
+  web/editforth.js and web/editforth.wasm are committed so the page can
+  load the engine. A cold pause opens the embedded boot image, and
+  Show boot messages prints the Loading lines on demand.
