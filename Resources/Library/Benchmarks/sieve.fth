@@ -17,11 +17,17 @@ variable eflag
 
 : BENCHMARK  0 5000 0 DO  PRIMES NIP  LOOP ;
 \ SECS BENCHMARK . SECS SWAP - CR . .( secs)
-: main
-	flags 8190 + eflag !
-	benchmark drop
+: MAIN ( -- )
+  FLAGS 8190 + EFLAG !
+  0
+  10 0 DO
+    I 500 * . ." sieve - "
+    MS@ >R
+    500 0 DO PRIMES NIP LOOP
+    MS@ R> - .ELAPSED CR PAUSE
+  LOOP
+  . ." primes" CR
 ;
-
 \ HPPA/720, 50 MHz: user 3.90s
 
-ELAPSED main
+.( Type MAIN to run sieve) CR

@@ -292,6 +292,9 @@ postKey("i".charCodeAt(0));
 await new Promise((r) => setTimeout(r, 40));
 for (let i = 0; i < 4; i++) {
   await waitFor(() => keyWaiting());
+  if (i === 0 && (!out().includes("U +") || !out().includes("CELLS"))) {
+    die("r label " + JSON.stringify(out()));
+  }
   postKey("o".charCodeAt(0));
   await new Promise((r) => setTimeout(r, 40));
 }

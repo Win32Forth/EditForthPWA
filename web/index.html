@@ -213,17 +213,31 @@
       flex: 1;
       min-width: 0;
       display: flex;
-      overflow-x: auto;
+      overflow-x: scroll;
+      overflow-y: hidden;
+      scrollbar-color: #b0b0b0 #e8e8e8;
+    }
+    #tabs::-webkit-scrollbar {
+      height: 12px;
+    }
+    #tabs::-webkit-scrollbar-track {
+      background: #e8e8e8;
+    }
+    #tabs::-webkit-scrollbar-thumb {
+      background: #b0b0b0;
     }
     #tabs:empty { display: none; }
     #find-toggle {
       flex: none;
+      align-self: stretch;
+      display: flex;
+      align-items: flex-start;
       margin-left: auto;
       border: 0;
       border-left: 1px solid #d0d0d0;
       background: transparent;
       cursor: pointer;
-      padding: 6px 12px;
+      padding: 5px 12px;
     }
     #find-toggle[aria-pressed="true"] { background: #ffffff; }
     #find-bar {
@@ -264,7 +278,7 @@
       border: 0;
       background: transparent;
       cursor: pointer;
-      padding: 6px 8px;
+      padding: 5px 8px 1px;
     }
     .tab-close { padding-left: 0; color: #444444; }
     #banner {
@@ -287,12 +301,70 @@
       cursor: pointer;
     }
     #editor-row {
+      position: relative;
       flex: 1;
       min-height: 0;
       display: flex;
       flex-direction: row;
     }
     #editor-row[hidden] { display: none; }
+    #gfx-host {
+      position: absolute;
+      inset: 0;
+      z-index: 6;
+      display: flex;
+      flex-direction: column;
+      background: #000000;
+      min-width: 0;
+      min-height: 0;
+    }
+    #gfx-host[hidden] { display: none !important; }
+    #gfx-img {
+      flex: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      background: #fff3b0;
+      color: #111111;
+      font: 13px/18px var(--ui-font);
+    }
+    #gfx-img[hidden] { display: none !important; }
+    #gfx-img button {
+      background: #ffffff;
+      color: #111111;
+      border: 1px solid #b0b0b0;
+      border-radius: 6px;
+      padding: 4px 10px;
+      cursor: pointer;
+    }
+    #gfx-title {
+      flex: none;
+      margin: 0;
+      padding: 4px 10px;
+      color: #b2ffb2;
+      background: #111111;
+      font: 13px/18px var(--ui-font);
+    }
+    #gfx-stage {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #000000;
+    }
+    #gfx {
+      max-width: 100%;
+      max-height: 100%;
+      width: auto;
+      height: auto;
+      image-rendering: pixelated;
+      background: #000000;
+      cursor: crosshair;
+      touch-action: none;
+      outline: none;
+    }
     #web-tab {
       flex: 1;
       min-height: 0;
@@ -591,7 +663,7 @@
         <button id="toggle-readonly" type="button" role="menuitem" disabled>Read Only</button>
       </div>
     </div>
-    <h1>EditForth 0.9.0</h1>
+    <h1>EditForth 1.0.0</h1>
     <span id="folder"></span>
     <span id="where"></span>
     <span class="spacer"></span>
@@ -638,6 +710,17 @@
             <pre id="hl" aria-hidden="true"></pre>
             <textarea id="editor" wrap="off" spellcheck="false" autocomplete="off" aria-label="Forth source"></textarea>
           </div>
+          <div id="gfx-host" hidden>
+            <p id="gfx-title">Graphics</p>
+            <div id="gfx-img" hidden>
+              <span>Choose an image file</span>
+              <button id="gfx-img-pick" type="button">Choose image</button>
+              <button id="gfx-img-cancel" type="button">Cancel</button>
+            </div>
+            <div id="gfx-stage">
+              <canvas id="gfx" tabindex="0" aria-label="Graphics" width="640" height="400"></canvas>
+            </div>
+          </div>
         </div>
         <div id="web-tab" hidden>
           <div id="web-bar">
@@ -655,9 +738,9 @@
       <section id="debug-bar">
         <div id="debug-actions">
           <button id="load" class="primary" type="button" title="Include this file (F4, Cmd+Enter, or Ctrl+Enter)">Include</button>
-          <button id="restart" type="button" title="Fresh image">Restart</button>
-          <button id="run" type="button" title="RUN (F5). Word under the caret, or LAST. Command-click fills DEBUG. Command-Shift-click fills BPGO. Return runs it.">RUN</button>
+          <button id="run" type="button" title="RUN (F5). Highlighted word, or the last definition in this file. Command-click fills DEBUG. Command-Shift-click fills BPGO. Return runs it.">RUN</button>
           <button id="pause" type="button" title="Pause at the next word defined after the debugger (Control-Command-Y). Already paused, or nothing running, does nothing.">Pause</button>
+          <button id="restart" type="button" title="Fresh image">Restart</button>
         </div>
         <span id="debug-status"></span>
         <span class="spacer"></span>
@@ -705,6 +788,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="app.js?v=86"></script>
+  <script type="module" src="app.js?v=104"></script>
 </body>
 </html>

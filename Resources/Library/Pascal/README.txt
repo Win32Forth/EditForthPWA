@@ -23,7 +23,8 @@ Entry words
 All three:
   • Honor FROMLIB at the entry word via PAS-RESOLVE (relative names are
     rewritten under LIBRARY-PATH, then the arm is cleared). Absolute and
-    ~ paths are unchanged. Resolution is not done inside PAS-OPEN.
+    ~ paths are unchanged. A relative name that does not open is tried
+    once more under Resources/Library, so PASFILE pascal/pasy.pas works.
   • Require a .pas extension (any case). A .fth path is rejected so a
     generated sample is never mistaken for Pascal source.
 

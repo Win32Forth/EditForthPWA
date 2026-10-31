@@ -259,11 +259,18 @@ struct ef_vm {
     int32_t dbg_inline;
     int32_t dbg_ip;
     int32_t dbg_cfa;
+    /* Colon the source map uses. A DOES> child keeps dbg_cfa as the child
+       (Break Now compares that address) and points this at the defining word. */
+    int32_t dbg_src;
     int32_t dbg_body;
     int32_t dbg_host_off;
     int32_t dbg_host_len;
     int32_t dbg_fr_rsp[DBG_FRAME_MAX];
     int32_t dbg_fr_cfa[DBG_FRAME_MAX];
+    /* Return address at rstack[rsp-1] when the frame was noted. DO and >R
+       raise rsp back over a finished call; the old slot then holds a loop
+       index, not this address, so the frame is no longer the current word. */
+    int32_t dbg_fr_link[DBG_FRAME_MAX];
     int32_t xt_dbg_off;
     int32_t xt_execute;
     int32_t xt_catch;
@@ -1176,24 +1183,34 @@ static int divide(ef_vm *vm, int32_t a, int32_t b, int32_t *quot, int32_t *rem) 
 static int exec_one(ef_vm *vm, int32_t cfa, int from_inner);
 static void dbg_note_frame(ef_vm *vm, int32_t cfa);
 static int dbg_consider(ef_vm *vm, int32_t xt);
+static int dbg_colon_at(ef_vm *vm, int32_t ip, int32_t *cfa_out, int32_t *cells_out);
+static int dbg_does_source(ef_vm *vm, int32_t child, int32_t ip, int32_t *owner, int32_t *cells);
 
 static int inner(ef_vm *vm, int stop_rsp) {
-    int guard = 0;
+    unsigned long long guard = 0;
     int prev = vm->in_inner;
     vm->in_inner = 1;
     while (vm->ip != 0 && vm->rsp >= stop_rsp && !vm->quit_req) {
         int32_t xt;
-        /* One eval. Yield every 2048 steps keeps Pause alive, so the
-           browser does not treat a long loop as a hung tab. */
-        if (++guard > 500000000) {
+        /* Backstop for a runaway loop. Five passes of the 6000-element
+           bubble sort are more than 500 million steps. */
+        if (++guard > 20000000000ULL) {
             vm->in_inner = prev;
             return fail(vm, -1, "step limit\n");
         }
 #ifdef __EMSCRIPTEN__
         /* Let the page set Break Now while a long eval is still inside NEXT.
-           The pause KEY wait already sleeps, so skip that nested case. */
+           The pause KEY wait already sleeps, so skip that nested case.
+           Chrome stretches a 1ms sleep to about 4ms. Sleeping on every
+           check made BubbleSort spend the run in that wait. Check often,
+           and sleep only after some real work. */
         if (vm->dbg_yield && !vm->dbg_busy && (guard & 2047) == 0) {
-            emscripten_sleep(1);
+            static double yield_at;
+            double now = emscripten_get_now();
+            if (now - yield_at >= 40.0) {
+                emscripten_sleep(1);
+                yield_at = emscripten_get_now();
+            }
         }
 #endif
         if (load_cell(vm, vm->ip, &xt)) {
@@ -4533,19 +4550,75 @@ static int p_refill(ef_vm *vm) {
     return push(vm, got ? -1 : 0);
 }
 
-/* No graphics window on this page. The names exist so app-output.fth can load.
-   (APP-KEY) returns 0: KEY loops while the result is negative. */
+/* The page draws this in #gfx. The terminal build keeps the quiet stubs.
+   Keys are the same queue the console KEY already uses. (APP-KEY) returns
+   -1 when that queue is empty so GRAPHICS KEY can pump and wait. */
+#ifdef __EMSCRIPTEN__
+static int gfx_live(void) {
+    return EM_ASM_INT({
+        const g = Module._gfx;
+        return (g && g.live) ? 1 : 0;
+    });
+}
+
+/* Include and the console hide the canvas when an eval returns. Forth can
+   still have G-OPEN?, so a later blit has to show the same window again. */
+static void gfx_show(void) {
+    if (gfx_live()) {
+        return;
+    }
+    EM_ASM({
+        const g = Module._gfx;
+        if (g && g.open) {
+            g.open(g.cols > 0 ? g.cols : 80, g.rows > 0 ? g.rows : 25);
+        }
+    });
+}
+
+static void gfx_drain_keys(ef_vm *vm) {
+    int n = 0;
+    if (!vm->key || !vm->key_q) {
+        return;
+    }
+    while (n < 64 && vm->key_q(vm->key_q_ctx)) {
+        if (vm->key(vm->key_ctx) < 0) {
+            break;
+        }
+        n++;
+    }
+}
+#endif
+
 static int p_app_open(ef_vm *vm) {
     int32_t cols, rows;
     if (pop(vm, &rows) || pop(vm, &cols)) {
         return EF_THROW;
     }
+#ifdef __EMSCRIPTEN__
+    EM_ASM({
+        const g = Module._gfx;
+        if (g && g.open) {
+            g.open($0, $1);
+        }
+    }, cols, rows);
+#else
     (void)cols;
     (void)rows;
+#endif
     return push(vm, 0);
 }
 static int p_app_close(ef_vm *vm) {
+#ifdef __EMSCRIPTEN__
+    gfx_drain_keys(vm);
+    EM_ASM({
+        const g = Module._gfx;
+        if (g && g.close) {
+            g.close();
+        }
+    });
+#else
     (void)vm;
+#endif
     return EF_OK;
 }
 static int p_app_blit(ef_vm *vm) {
@@ -4553,19 +4626,49 @@ static int p_app_blit(ef_vm *vm) {
     if (pop(vm, &n) || pop(vm, &addr)) {
         return EF_THROW;
     }
+    if (n < 0 || !span_ok(vm, addr, n)) {
+        return fail(vm, -16, "bad address\n");
+    }
+#ifdef __EMSCRIPTEN__
+    if (n > 0) {
+        gfx_show();
+        EM_ASM({
+            const g = Module._gfx;
+            if (g && g.live && g.chars) {
+                g.chars(HEAPU8, $0, $1);
+            }
+        }, vm->base + addr, n);
+    }
+#else
     (void)addr;
     (void)n;
+#endif
     return EF_OK;
 }
-/* ( c-addr u depth -- ) and ( c-addr u -- ). No pixel window on this page. */
+/* ( c-addr u depth -- ) and ( c-addr u -- ). */
 static int p_app_cblit(ef_vm *vm) {
     int32_t addr, n, depth;
     if (pop(vm, &depth) || pop(vm, &n) || pop(vm, &addr)) {
         return EF_THROW;
     }
+    if (n < 0 || !span_ok(vm, addr, n)) {
+        return fail(vm, -16, "bad address\n");
+    }
+#ifdef __EMSCRIPTEN__
+    if (n > 0) {
+        gfx_show();
+        EM_ASM({
+            const g = Module._gfx;
+            if (g && g.live && g.pixels) {
+                g.pixels(HEAPU8, $0, $1, $2);
+            }
+        }, vm->base + addr, n, depth);
+    }
+#else
     (void)addr;
     (void)n;
     (void)depth;
+#endif
     return EF_OK;
 }
 static int p_app_pblit(ef_vm *vm) {
@@ -4573,19 +4676,79 @@ static int p_app_pblit(ef_vm *vm) {
     if (pop(vm, &n) || pop(vm, &addr)) {
         return EF_THROW;
     }
+    if (n < 0 || !span_ok(vm, addr, n)) {
+        return fail(vm, -16, "bad address\n");
+    }
+#ifdef __EMSCRIPTEN__
+    if (n > 0) {
+        gfx_show();
+        EM_ASM({
+            const g = Module._gfx;
+            if (g && g.live && g.pixels) {
+                g.pixels(HEAPU8, $0, $1, 1);
+            }
+        }, vm->base + addr, n);
+    }
+#else
     (void)addr;
     (void)n;
+#endif
     return EF_OK;
 }
-static int p_app_key_q(ef_vm *vm) { return push(vm, 0); }
-static int p_app_key(ef_vm *vm) { return push(vm, 0); }
+static int p_app_key_q(ef_vm *vm) {
+#ifdef __EMSCRIPTEN__
+    if (gfx_live() && vm->key_q && vm->key_q(vm->key_q_ctx)) {
+        return push(vm, -1);
+    }
+#endif
+    return push(vm, 0);
+}
+static int p_app_key(ef_vm *vm) {
+#ifdef __EMSCRIPTEN__
+    int c;
+    if (!gfx_live() || !vm->key || !vm->key_q) {
+        return push(vm, 0);
+    }
+    if (!vm->key_q(vm->key_q_ctx)) {
+        return push(vm, -1);
+    }
+    c = vm->key(vm->key_ctx);
+    if (c < 0) {
+        return push(vm, -1);
+    }
+    return push(vm, c);
+#else
+    return push(vm, 0);
+#endif
+}
 static int p_app_name(ef_vm *vm) {
     int32_t addr, n;
+    char tmp[241];
+    int ncopy;
     if (pop(vm, &n) || pop(vm, &addr)) {
         return EF_THROW;
     }
-    (void)addr;
-    (void)n;
+    ncopy = n;
+    if (ncopy > 240) {
+        ncopy = 240;
+    }
+    if (ncopy < 0 || !span_ok(vm, addr, ncopy)) {
+        return fail(vm, -16, "bad address\n");
+    }
+    if (ncopy > 0) {
+        memcpy(tmp, vm->base + addr, (size_t)ncopy);
+    }
+    tmp[ncopy] = 0;
+#ifdef __EMSCRIPTEN__
+    EM_ASM({
+        const g = Module._gfx;
+        if (g && g.setName) {
+            g.setName(UTF8ToString($0));
+        }
+    }, tmp);
+#else
+    (void)tmp;
+#endif
     return EF_OK;
 }
 static int p_app_tone(ef_vm *vm) {
@@ -4593,19 +4756,45 @@ static int p_app_tone(ef_vm *vm) {
     if (pop(vm, &dur) || pop(vm, &freq)) {
         return EF_THROW;
     }
+#ifdef __EMSCRIPTEN__
+    EM_ASM({
+        const g = Module._gfx;
+        if (g && g.tone) {
+            g.tone($0, $1);
+        }
+    }, freq, dur);
+#else
     (void)freq;
     (void)dur;
+#endif
     return EF_OK;
 }
 static int p_app_pump(ef_vm *vm) {
-    (void)vm;
-    return EF_OK;
+    return p_pause(vm);
 }
 static int p_app_mouse(ef_vm *vm) {
-    if (push(vm, 0) || push(vm, 0)) {
+    int x = 0;
+    int y = 0;
+    int buttons = 0;
+#ifdef __EMSCRIPTEN__
+    int packed = EM_ASM_INT({
+        const g = Module._gfx;
+        if (!g || !g.live) {
+            return 0;
+        }
+        const x = g.x | 0;
+        const y = g.y | 0;
+        const b = g.buttons | 0;
+        return ((b & 7) << 24) | ((y & 4095) << 12) | (x & 4095);
+    });
+    x = packed & 4095;
+    y = (packed >> 12) & 4095;
+    buttons = (packed >> 24) & 7;
+#endif
+    if (push(vm, x) || push(vm, y)) {
         return EF_THROW;
     }
-    return push(vm, 0);
+    return push(vm, buttons);
 }
 /* ( -- cols rows flag ). Flag 0 so ?WINDOW-RESIZE takes the 2DROP path. */
 static int p_app_size(ef_vm *vm) {
@@ -4613,6 +4802,151 @@ static int p_app_size(ef_vm *vm) {
         return EF_THROW;
     }
     return push(vm, 0);
+}
+
+/* Image viewer. The page keeps the decoded BGRA pixels. A file panel cannot
+   open from an Asyncify resume, so choose waits on a button in the page.
+   Native has no decoder: choose cancels, load fails, size is 0 0, render fails. */
+#ifdef __EMSCRIPTEN__
+static int img_wait(void) {
+    for (;;) {
+        int pending = EM_ASM_INT({
+            const img = Module._img;
+            return (img && img.pending) ? 1 : 0;
+        });
+        if (!pending) {
+            break;
+        }
+        emscripten_sleep(16);
+    }
+    return EM_ASM_INT({
+        const img = Module._img;
+        return img ? (img.lastIor | 0) : -2;
+    });
+}
+
+static int img_path_ok(const char *s) {
+    const char *p;
+    if (!s || !s[0] || s[0] == '/' || s[0] == '\\') {
+        return 0;
+    }
+    if (strchr(s, ':') || strchr(s, '\\')) {
+        return 0;
+    }
+    for (p = s; *p; p++) {
+        if (p[0] == '.' && p[1] == '.' &&
+            (p == s || p[-1] == '/') &&
+            (p[2] == 0 || p[2] == '/')) {
+            return 0;
+        }
+    }
+    return 1;
+}
+#endif
+
+/* (APP-IMG-CHOOSE) ( -- ior ). 0 loaded, -1 cancelled, -2 failed. */
+static int p_app_img_choose(ef_vm *vm) {
+#ifdef __EMSCRIPTEN__
+    EM_ASM({
+        const img = Module._img;
+        if (img && img.choose) {
+            img.choose();
+        } else if (img) {
+            img.pending = false;
+            img.lastIor = -2;
+        }
+    });
+    return push(vm, img_wait());
+#else
+    return push(vm, -1);
+#endif
+}
+
+/* (APP-IMG-LOAD) ( c-addr u -- ior ). Same-origin relative path. */
+static int p_app_img_load(ef_vm *vm) {
+    int32_t addr, n;
+    if (pop(vm, &n) || pop(vm, &addr)) {
+        return EF_THROW;
+    }
+#ifdef __EMSCRIPTEN__
+    {
+        char path[1024];
+        if (n <= 0 || n >= (int)sizeof path || !span_ok(vm, addr, n)) {
+            return push(vm, -2);
+        }
+        memcpy(path, vm->base + addr, (size_t)n);
+        path[n] = 0;
+        if (!img_path_ok(path)) {
+            return push(vm, -2);
+        }
+        EM_ASM({
+            const img = Module._img;
+            if (img && img.loadPath) {
+                img.loadPath(UTF8ToString($0));
+            } else if (img) {
+                img.pending = false;
+                img.lastIor = -2;
+            }
+        }, path);
+        return push(vm, img_wait());
+    }
+#else
+    (void)addr;
+    (void)n;
+    return push(vm, -2);
+#endif
+}
+
+/* (APP-IMG-SIZE) ( -- w h ). Top of stack is the height. */
+static int p_app_img_size(ef_vm *vm) {
+    int w = 0;
+    int h = 0;
+#ifdef __EMSCRIPTEN__
+    w = EM_ASM_INT({
+        const img = Module._img;
+        return img ? (img.w | 0) : 0;
+    });
+    h = EM_ASM_INT({
+        const img = Module._img;
+        return img ? (img.h | 0) : 0;
+    });
+#endif
+    if (push(vm, w) || push(vm, h)) {
+        return EF_THROW;
+    }
+    return EF_OK;
+}
+
+/* (APP-IMG-RENDER) ( dest w h cx cy zoom100 -- ior ). BGRA, y down. */
+static int p_app_img_render(ef_vm *vm) {
+    int32_t dest, w, h, cx, cy, zoom;
+    int ior = -1;
+    if (pop(vm, &zoom) || pop(vm, &cy) || pop(vm, &cx) ||
+        pop(vm, &h) || pop(vm, &w) || pop(vm, &dest)) {
+        return EF_THROW;
+    }
+#ifdef __EMSCRIPTEN__
+    if (dest != 0 && w > 0 && h > 0 && w <= 4096 && h <= 4096) {
+        int64_t bytes = (int64_t)w * (int64_t)h * 4;
+        if (bytes <= 0x7fffffff && span_ok(vm, dest, (int32_t)bytes)) {
+            ior = EM_ASM_INT({
+                const img = Module._img;
+                if (!img || !img.render) {
+                    return -1;
+                }
+                return img.render(HEAPU8, $0, $1, $2, $3, $4, $5) | 0;
+            }, vm->base + dest, w, h, cx, cy, zoom);
+        }
+    }
+#else
+    (void)dest;
+    (void)w;
+    (void)h;
+    (void)cx;
+    (void)cy;
+    (void)zoom;
+#endif
+    return push(vm, ior);
 }
 static int p_key_q(ef_vm *vm) {
     int flag = 0;
@@ -4731,27 +5065,48 @@ static int32_t hook_get(ef_vm *vm, const char *name, int32_t fallback) {
     return v;
 }
 
+/* The saved return address is still in its slot. A later >R can make rsp
+   look deep enough for a call that has already returned. */
+static int dbg_frame_live(const ef_vm *vm, int i) {
+    int32_t slot = vm->dbg_fr_rsp[i];
+    if (i < 0 || slot <= 0 || slot > vm->rsp) {
+        return 0;
+    }
+    return vm->rstack[slot - 1] == vm->dbg_fr_link[i];
+}
+
 static void dbg_note_frame(ef_vm *vm, int32_t cfa) {
-    int n = 0;
+    int n;
+    int w = 0;
     /* The pause UI runs nested while dbg_busy. Its colon frames sit at the
        same return depth >R produces, and the next pause would treat the
        pause word as the word being stepped. */
     if (vm->dbg_busy) {
         return;
     }
-    while (n < vm->dbg_frame_n && vm->dbg_fr_rsp[n] < vm->rsp) {
-        n++;
+    for (n = 0; n < vm->dbg_frame_n; n++) {
+        if (vm->dbg_fr_rsp[n] < vm->rsp && dbg_frame_live(vm, n)) {
+            if (w != n) {
+                vm->dbg_fr_rsp[w] = vm->dbg_fr_rsp[n];
+                vm->dbg_fr_cfa[w] = vm->dbg_fr_cfa[n];
+                vm->dbg_fr_link[w] = vm->dbg_fr_link[n];
+            }
+            w++;
+        }
     }
-    vm->dbg_frame_n = n;
+    vm->dbg_frame_n = w;
     if (vm->dbg_frame_n >= DBG_FRAME_MAX) {
         memmove(vm->dbg_fr_rsp, vm->dbg_fr_rsp + 1,
                 (size_t)(DBG_FRAME_MAX - 1) * sizeof vm->dbg_fr_rsp[0]);
         memmove(vm->dbg_fr_cfa, vm->dbg_fr_cfa + 1,
                 (size_t)(DBG_FRAME_MAX - 1) * sizeof vm->dbg_fr_cfa[0]);
+        memmove(vm->dbg_fr_link, vm->dbg_fr_link + 1,
+                (size_t)(DBG_FRAME_MAX - 1) * sizeof vm->dbg_fr_link[0]);
         vm->dbg_frame_n = DBG_FRAME_MAX - 1;
     }
     vm->dbg_fr_rsp[vm->dbg_frame_n] = vm->rsp;
     vm->dbg_fr_cfa[vm->dbg_frame_n] = cfa;
+    vm->dbg_fr_link[vm->dbg_frame_n] = vm->rsp > 0 ? vm->rstack[vm->rsp - 1] : 0;
     vm->dbg_frame_n++;
 }
 
@@ -4791,11 +5146,13 @@ static int view_stamp(ef_vm *vm, int32_t xt, char *path, int cap, int *line) {
     return 1;
 }
 
-/* Enclosing colon first, then the peeked token. Same order as kernel_debug_location. */
+/* Enclosing colon first, then the peeked token. Same order as kernel_debug_location.
+   A DOES> step reports the defining word, where the (DOES>) thread is written. */
 static void dbg_location(ef_vm *vm, char *path, int cap, int *line) {
+    int32_t src = vm->dbg_src ? vm->dbg_src : vm->dbg_cfa;
     path[0] = 0;
     *line = 0;
-    if (view_stamp(vm, vm->dbg_cfa, path, cap, line)) {
+    if (view_stamp(vm, src, path, cap, line)) {
         return;
     }
     if (vm->dbg_xt != vm->dbg_cfa) {
@@ -4885,12 +5242,33 @@ static int dbg_bp_match(ef_vm *vm, int32_t xt) {
     return 0;
 }
 
+/* row-size returns before DO. Its frame's rsp is then below the loop's
+   >R slots, so a depth check still names that constant (line 20) while
+   innerproduct is running. Keep a frame only while its return address
+   is the cell that was saved. */
+static void dbg_drop_returned(ef_vm *vm) {
+    int n;
+    int w = 0;
+    for (n = 0; n < vm->dbg_frame_n; n++) {
+        if (dbg_frame_live(vm, n)) {
+            if (w != n) {
+                vm->dbg_fr_rsp[w] = vm->dbg_fr_rsp[n];
+                vm->dbg_fr_cfa[w] = vm->dbg_fr_cfa[n];
+                vm->dbg_fr_link[w] = vm->dbg_fr_link[n];
+            }
+            w++;
+        }
+    }
+    vm->dbg_frame_n = w;
+}
+
 static void dbg_resolve_enclosing(ef_vm *vm) {
     int i;
     int best = -1;
     int32_t cfa = 0;
+    dbg_drop_returned(vm);
     for (i = 0; i < vm->dbg_frame_n; i++) {
-        if (vm->dbg_fr_rsp[i] <= vm->rsp) {
+        if (dbg_frame_live(vm, i)) {
             best = i;
         }
     }
@@ -4898,7 +5276,16 @@ static void dbg_resolve_enclosing(ef_vm *vm) {
         cfa = vm->dbg_fr_cfa[best];
     }
     vm->dbg_cfa = cfa;
+    vm->dbg_src = cfa;
     vm->dbg_body = cfa ? (vm->dbg_ip - (cfa + 2 * CELL)) / CELL : 0;
+    if (cfa) {
+        int32_t owner = 0;
+        int32_t cells = 0;
+        if (dbg_does_source(vm, cfa, vm->dbg_ip, &owner, &cells)) {
+            vm->dbg_src = owner;
+            vm->dbg_body = cells;
+        }
+    }
 }
 
 static void dbg_print_name(ef_vm *vm) {
@@ -4977,6 +5364,133 @@ static int dbg_intoable(ef_vm *vm, int32_t xt) {
     return xt == vm->xt_execute || xt == vm->xt_catch;
 }
 
+/* A cell is a colon CFA when its code field is a real code id. A return
+   address inside a body fails this and is labeled by dbg_colon_at. */
+static int dbg_code_ok(ef_vm *vm, int32_t xt) {
+    int32_t code;
+    if (!dbg_name_ok(vm, xt) || load_quiet(vm, xt, &code)) {
+        return 0;
+    }
+    if (code == EF_DOCOL || code == EF_DOVAR || code == EF_DOCON || code == EF_DODOES) {
+        return 1;
+    }
+    return code >= 0 && code < g_prim_count && g_prims[code] != NULL;
+}
+
+/* Closest DOCOL body at or before ip, across FORTH and every registered
+   wordlist. Same rule as EditForth _ip_find_colon. Offset is cells from
+   the body; more than 512 cells is left as a number. */
+static int dbg_colon_at(ef_vm *vm, int32_t ip, int32_t *cfa_out, int32_t *cells_out) {
+    int32_t best_cfa = 0;
+    int32_t best_body = 0;
+    int32_t lists[EF_WL + 1];
+    int nlists = 0;
+    int w;
+    int th;
+    if ((ip & 3) || ip < DICT_ORIGIN || (size_t)ip >= vm->count) {
+        return 0;
+    }
+    lists[nlists++] = vm->forth_wid;
+    for (w = 0; w < vm->nwid && nlists < EF_WL + 1; w++) {
+        if (vm->wids[w] != vm->forth_wid) {
+            lists[nlists++] = vm->wids[w];
+        }
+    }
+    for (w = 0; w < nlists; w++) {
+        int32_t wid = lists[w];
+        if (wid < 0 || (size_t)wid + (size_t)EF_THREADS * CELL > vm->count) {
+            continue;
+        }
+        for (th = 0; th < EF_THREADS; th++) {
+            int32_t cfa = uv(vm, wid + th * CELL);
+            int guard = 0;
+            while (cfa && guard++ < 1000000) {
+                int32_t code = 0;
+                int32_t next = uv(vm, cfa - 3 * CELL);
+                if ((cfa & 3) || cfa < DICT_ORIGIN || (size_t)cfa + 2 * CELL > vm->count) {
+                    break;
+                }
+                if (!load_quiet(vm, cfa, &code) && code == EF_DOCOL) {
+                    int32_t body = cfa + 2 * CELL;
+                    int32_t bytes = ip - body;
+                    if (body <= ip && bytes < (1 << 20) && (bytes % CELL) == 0) {
+                        int32_t cells = bytes / CELL;
+                        if (cells <= 512 && (best_cfa == 0 || body > best_body)) {
+                            best_cfa = cfa;
+                            best_body = body;
+                        }
+                    }
+                }
+                if (next == cfa) {
+                    break;
+                }
+                cfa = next;
+            }
+        }
+    }
+    if (!best_cfa || !dbg_name_ok(vm, best_cfa)) {
+        return 0;
+    }
+    *cfa_out = best_cfa;
+    *cells_out = (ip - best_body) / CELL;
+    return 1;
+}
+
+/* DOES> saved the instruction pointer of its thread in the child. While
+   that thread is running, the source is the defining colon (CONSTANT's @),
+   not the child line that only names the constant. */
+static int dbg_does_source(ef_vm *vm, int32_t child, int32_t ip,
+                           int32_t *owner, int32_t *cells) {
+    int32_t code = 0;
+    int32_t does_ip = 0;
+    int32_t own_does = 0;
+    int32_t own_ip = 0;
+    int32_t ignored = 0;
+    int32_t at = 0;
+    if (load_quiet(vm, child, &code) || code != EF_DODOES) {
+        return 0;
+    }
+    if (load_quiet(vm, child + CELL, &does_ip) || !does_ip) {
+        return 0;
+    }
+    if (!dbg_colon_at(vm, does_ip, &own_does, &ignored)) {
+        return 0;
+    }
+    if (!dbg_colon_at(vm, ip, &own_ip, &at) || own_ip != own_does || ip < does_ip) {
+        return 0;
+    }
+    *owner = own_ip;
+    *cells = at;
+    return 1;
+}
+
+/* EditForth _fmt_ip_label: "NAME +N CELLS", or the word's name when the
+   cell is an xt. Small cells and anything else stay ordinary numbers. */
+static void dbg_emit_r_cell(ef_vm *vm, int32_t v) {
+    int32_t cfa = 0;
+    int32_t cells = 0;
+    char name[17];
+    if (v >= -4096 && v < 4096) {
+        emit_int(vm, v, base_of(vm), 1);
+        return;
+    }
+    if (dbg_code_ok(vm, v)) {
+        copy_name(vm, v, name, (int)sizeof name);
+        emit_str(vm, name[0] ? name : "?");
+        emit_ch(vm, ' ');
+        return;
+    }
+    if (dbg_colon_at(vm, v, &cfa, &cells)) {
+        copy_name(vm, cfa, name, (int)sizeof name);
+        emit_str(vm, name[0] ? name : "?");
+        emit_str(vm, cells < 0 ? " -" : " +");
+        emit_uint(vm, (uint32_t)(cells < 0 ? -cells : cells), 10);
+        emit_str(vm, " CELLS ");
+        return;
+    }
+    emit_int(vm, v, base_of(vm), 1);
+}
+
 /* S starts at column 23 (after ">> " and a 20-column name). The S field is
    45 columns, then R. A line already past a column gets one space instead.
    Same columns as EditForth DEBUG_STACK_COL / the 45-wide S field. */
@@ -5045,7 +5559,7 @@ static void dbg_print_sr(ef_vm *vm) {
         if (idx < 0 || idx >= EF_RSTACK) {
             break;
         }
-        emit_int(vm, vm->rstack[idx], base_of(vm), 1);
+        dbg_emit_r_cell(vm, vm->rstack[idx]);
     }
     if (depth > 4) {
         emit_str(vm, "...");
@@ -5063,7 +5577,8 @@ static void dbg_step_over(ef_vm *vm) {
     vm->dbg_need_stacks = 1;
     vm->dbg_out = -1;
     vm->dbg_over = -1;
-    if (vm->dbg_xt && !load_quiet(vm, vm->dbg_xt, &code) && code == EF_DOCOL) {
+    if (vm->dbg_xt && !load_quiet(vm, vm->dbg_xt, &code) &&
+        (code == EF_DOCOL || code == EF_DODOES)) {
         vm->dbg_over = vm->dbg_pause_rsp;
     }
     dbg_sync_flags(vm);
@@ -5239,6 +5754,31 @@ static int dbg_fallback(ef_vm *vm) {
     }
 }
 
+/* Caller depth of the outermost live word at or above DEBUGGER-END.
+   rsp-1 at the hit is not that depth: DO and >R push more cells, and a
+   later R> lands on that fake floor so + and >R never pause. */
+static int32_t dbg_break_floor(ef_vm *vm, int32_t min) {
+    int i;
+    int32_t floor = vm->rsp > 0 ? vm->rsp - 1 : 0;
+    for (i = 0; i < vm->dbg_frame_n; i++) {
+        int32_t cfa;
+        int32_t slot;
+        if (!dbg_frame_live(vm, i)) {
+            continue;
+        }
+        cfa = vm->dbg_fr_cfa[i];
+        if (min && cfa < min) {
+            continue;
+        }
+        slot = vm->dbg_fr_rsp[i];
+        if (slot > 0) {
+            floor = slot - 1;
+        }
+        break;
+    }
+    return floor;
+}
+
 /* Break Now. Arm if this eval was free-running, drop go/step modes, and
    keep executing until the enclosing colon is at or above DEBUGGER-END.
    The flag stays set across those skipped tokens. On the hit, the caller
@@ -5275,7 +5815,7 @@ static void dbg_seek_break(ef_vm *vm) {
         }
     }
     vm->dbg_break_asap = 0;
-    vm->dbg_floor = vm->rsp > 0 ? vm->rsp - 1 : 0;
+    vm->dbg_floor = dbg_break_floor(vm, min);
     vm->dbg_floor_on = 1;
 }
 
@@ -5377,6 +5917,7 @@ static int p_dbg_on(ef_vm *vm) {
     vm->dbg_xt = 0;
     vm->dbg_ip = 0;
     vm->dbg_cfa = 0;
+    vm->dbg_src = 0;
     vm->dbg_body = 0;
     vm->dbg_need_intro = 1;
     vm->dbg_need_stacks = 0;
@@ -5417,7 +5958,9 @@ static int p_dbg_break_min(ef_vm *vm) {
 
 static int p_dbg_xt_at(ef_vm *vm) { return push(vm, vm->dbg_xt); }
 static int p_dbg_ip_at(ef_vm *vm) { return push(vm, vm->dbg_ip); }
-static int p_dbg_cfa_at(ef_vm *vm) { return push(vm, vm->dbg_cfa); }
+static int p_dbg_cfa_at(ef_vm *vm) {
+    return push(vm, vm->dbg_src ? vm->dbg_src : vm->dbg_cfa);
+}
 static int p_dbg_body_n(ef_vm *vm) { return push(vm, vm->dbg_body); }
 static int p_dbg_dot_sr(ef_vm *vm) { dbg_print_sr(vm); return EF_OK; }
 static int p_dbg_print_inline(ef_vm *vm) { dbg_print_inline(vm); return EF_OK; }
@@ -8904,6 +9447,10 @@ static const struct {
     { "(APP-PUMP)", p_app_pump, 0 },
     { "(APP-MOUSE)", p_app_mouse, 0 },
     { "(APP-SIZE?)", p_app_size, 0 },
+    { "(APP-IMG-CHOOSE)", p_app_img_choose, 0 },
+    { "(APP-IMG-LOAD)", p_app_img_load, 0 },
+    { "(APP-IMG-SIZE)", p_app_img_size, 0 },
+    { "(APP-IMG-RENDER)", p_app_img_render, 0 },
     { "KEY?", p_key_q, 0 },
     { "PAUSE", p_pause, 0 },
     { "LATEST", p_latest, 0 },

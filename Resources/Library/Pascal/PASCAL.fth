@@ -778,7 +778,7 @@ DEFER EXPR-
 : (STATMENT)
     CROUT++
     KEYWORD? IF DO-STATMENT ELSE VAR-ASSIGN THEN ;
-' (STATMENT) IS STATMENT ;
+' (STATMENT) IS STATMENT
 
 : BEGIN-1
     PTYP IF  CROUT S" :" "OUT $OUT 16 SP>COL  THEN
@@ -799,7 +799,7 @@ DEFER EXPR-
     IF  FALSE TO ?STP
         BEGIN DO-BLOCK ?STP UNTIL
     THEN ;
-' (BLOCK-) IS BLOCK- ;
+' (BLOCK-) IS BLOCK-
 
 : PAS_INIT  PASLEN OFF  PASIN OFF  0 TO CON#  0 TO VAR# ;
 
@@ -829,15 +829,30 @@ CREATE PAS-OUTBUF  256 ALLOT
     OVER C@ [CHAR] ~ = IF  2DROP TRUE EXIT  THEN
     2DROP FALSE ;
 
+\ ( c-addr u p-addr p-u -- flag )  true when the path begins with the prefix.
+: PAS-STARTS?  ( c-addr u p-addr p-u -- flag )
+    DUP 3 PICK > IF  2DROP 2DROP FALSE EXIT  THEN
+    >R SWAP R@ MIN SWAP R> COMPARE 0= ;
+
+: PAS-ROOTED?  ( c-addr u -- flag )
+    2DUP S" Resources/" PAS-STARTS? >R
+    S" Library/" PAS-STARTS? R> OR ;
+
 : PAS-S+  ( c-addr u dest -- )
     >R  R@ COUNT +  SWAP DUP >R MOVE
     R> R@ C@ + R> C! ;
+
+\ ( -- c-addr u )  Library root used when FROMLIB is armed.
+[UNDEFINED] LIBRARY-PATH [IF]
+: LIBRARY-PATH  S" Resources/Library" ;
+[THEN]
 
 \ If FROMLIB is armed, rewrite a relative path under LIBRARY-PATH and clear
 \ the arm (folder translation for Library-relative names). Absolute or ~
 \ paths are unchanged. Without FROMLIB, the path stays cwd-relative.
 \ Done here — not in PAS-OPEN — so PASCAL / PASCAL" / PASCAL-TO-FILE share
-\ one commented resolve step.
+\ one commented resolve step. A relative name that still does not open is
+\ tried once under LIBRARY-PATH (PAS-OPEN-ANY).
 : PAS-RESOLVE  ( c-addr u -- c-addr' u' )
     2DUP PAS-ABS? IF EXIT THEN
     FROMLIB? 0= IF EXIT THEN
@@ -884,9 +899,28 @@ CREATE PAS-OUTBUF  256 ALLOT
     [CHAR] h SWAP 3 + C!
     PAS-OUTBUF COUNT ;
 
+\ Open the name as given. A relative miss is retried under LIBRARY-PATH,
+\ so PASFILE pascal/pasy.pas finds Resources/Library/Pascal/PASY.PAS.
+: PAS-OPEN-ANY  ( c-addr u -- )
+    PAS-CLOSE
+    2DUP R/O OPEN-FILE 0= IF  NIP NIP PASFID ! EXIT  THEN
+    DROP
+    2DUP PAS-ABS? >R  2DUP PAS-ROOTED? R> OR IF
+        2DROP TRUE ABORT" Couldn't open file."
+    THEN
+    LIBRARY-PATH DUP 0= IF
+        2DROP 2DROP DROP TRUE ABORT" Couldn't open file."
+    THEN
+    0 PAS-NAMEBUF C!
+    PAS-NAMEBUF PLACE
+    S" /" PAS-NAMEBUF PAS-S+
+    PAS-NAMEBUF PAS-S+
+    PAS-NAMEBUF COUNT R/O OPEN-FILE ABORT" Couldn't open file."
+    PASFID ! ;
+
 : (PASCAL-TRANS)  ( c-addr u -- )
     INIT_ARRAYS
-    PAS-OPEN
+    PAS-OPEN-ANY
     CROUT PROGRAM
     PAS-CLOSE ;
 

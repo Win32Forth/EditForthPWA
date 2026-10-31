@@ -291,3 +291,6 @@ DOC" GETMOUS ( -- x y buttons ) TCOM-compatible alias for G-MOUSE"
   ;
 
 FORTH DEFINITIONS
+
+\ The samples call this at load. It is an emitter flag. This image has no emitter.
+: EMIT-NO-WRAPPER ( -- ) ;

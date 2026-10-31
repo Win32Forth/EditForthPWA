@@ -1,7 +1,7 @@
 EditForthPWA library
 ---------------------
 This tree came from EditForth. Library holds the samples: Benchmarks,
-Classes, Pascal, and Sample. Debugger, Sources, and Testing live in the
+Pascal, and Sample. Debugger, Sources, and Testing live in the
 sibling Resources/System folder, as they do in EditForth.
 
 FROMLIB resolves a relative path under Resources/Library. The same word
@@ -28,7 +28,6 @@ Examples
   FROMLIB FLOAD Sample/DOODLE64.fth        \ then: DOODLE (1-bit mouse demo)
   FROMLIB FLOAD Sample/DOODLECOLOR64.fth   \ then: DOODLECOLOR (COLOR8 + color bar)
   FROMLIB FLOAD Sample/IMAGEVIEW64.fth     \ then: IMAGEVIEW (TRUECOLOR open/zoom)
-  FROMLIB FLOAD Sample/EDIT64.fth          \ then: EDIT64 (GRAPHICS mini-editor; EMITable)
   \ REF / XREF / USEDIN / CALLS / ANYWORDS — cold-loaded (Kernel/xref.fth .incbin)
   \   REF DUP          \ colon/DEFER refs; Space=pause Esc/Q=stop; title shows leaf:line
   \   ANYWORDS OVER    \ WORDS-like across FORTH + named VOCABULARYs (optional filter)

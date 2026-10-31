@@ -69,9 +69,9 @@ align create thelist elements cells allot
   verify-list
 ;
 
-: main	( -- )
-	5 0 do bubble-sort loop
-\	bubble-sort-with-flag
+: MAIN ( -- )
+    5 0 DO
+        I . ." BubbleSort - "
+        MS@ >R bubble-sort MS@ R> - .ELAPSED CR PAUSE
+    LOOP 
 ;
-
-ELAPSED main

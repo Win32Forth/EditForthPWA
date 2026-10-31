@@ -31,8 +31,8 @@ DOC" UD. ( ud -- ) print unsigned double"
 DOC" D. ( n -- ) print signed single in current BASE via pictured output"
 : D. DUP 0< IF NEGATE 0 <# #S 45 HOLD #> ELSE 0 <# #S #> THEN TYPE SPACE ;
 
-DOC" FILL ( addr u b -- ) fill u bytes at addr with b"
-: FILL >R BEGIN DUP WHILE OVER R@ SWAP C! SWAP 1+ SWAP 1- REPEAT R> DROP 2DROP ;
+\ FILL is the engine primitive. A Forth byte loop sleeps every 2048 steps
+\ in the browser, so erasing the pixel map would stall the graphics window.
 DOC" ERASE ( addr u -- ) fill u bytes at addr with zero"
 : ERASE 0 FILL ;
 DOC" CMOVE ( c-addr1 c-addr2 u -- ) copy u chars from c-addr1 to c-addr2 (low→high)"

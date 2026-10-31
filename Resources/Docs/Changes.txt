@@ -2,7 +2,23 @@ EditForthPWA changes
 --------------------
 
 This is the feature history from the commits on main, starting with the
-first checkin. The hash is the GitHub commit. 0.9.0 is the current release.
+first checkin. The hash is the GitHub commit. 1.0.0 is the current release.
+
+1.0.0  Oct 30, 2026
+  Sample programs draw on a canvas in the editor. DOODLE64,
+  DOODLECOLOR64, CLOCK, GCLOCK, BRESENHAM, MIDNIGHT, and IMAGEVIEW64
+  open that window. Esc or Q returns to the console. EDIT64, VED64,
+  and Library/Classes are gone.
+  Pause steps through a DOES> body, and through + and >R inside a
+  loop. The ok(n)> prompt stays on its own line. A long loop yields
+  back to the page, so Pause can land and a benchmark can finish.
+  BubbleSort, fib, matrix-mult, and sieve print the elapsed time for
+  each pass and wait. Including the file does not run it. Type MAIN,
+  or press RUN, to start one. Benchmarks.fth and the two older
+  benchmark files are gone. BubbleSort.fth is the bubble-sort source.
+  PASCAL.fth loads. PASFILE pascal/pasy.pas finds the file under
+  Resources/Library. The file tabs keep a horizontal scrollbar. A
+  web address that is not a URL searches Wiby.
 
 0.9.0  Oct 29, 2026
   Open Web Page is in the three-line menu. It opens

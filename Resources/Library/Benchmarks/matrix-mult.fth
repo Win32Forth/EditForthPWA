@@ -54,6 +54,10 @@ align create imr mat-byte-size allot
   drop
 ;
 
-: main 10 0 do mainx loop ;
-
-ELAPSED main
+: MAIN ( -- )
+  10 0 DO
+    I . ." matrix-mult - "
+    MS@ >R mainx MS@ R> - .ELAPSED CR PAUSE
+  LOOP
+;
+.( Type MAIN to run matrix-mult) CR

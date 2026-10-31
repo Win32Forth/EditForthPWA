@@ -1,4 +1,4 @@
-import createEditForth from "./editforth.js?v=86";
+import createEditForth from "./editforth.js?v=104";
 
 const log = document.querySelector("#log");
 const installBtn = document.querySelector("#install");
@@ -32,7 +32,7 @@ const DBG_OVER = (2 << 24) | 16;
 const DBG_INTO = (2 << 24) | 17;
 const DBG_OUT = (2 << 24) | 18;
 
-const BANNER = "=== EditForthPWA 0.9.0 === Oct 29, 2026 8:09 PM ===\n";
+const BANNER = "=== EditForthPWA 1.0.0 === Oct 30, 2026 9:36 PM ===\n";
 
 const SEED =
   "\\ Cmd+Enter or Ctrl+Enter loads this file.\n" +
@@ -615,7 +615,7 @@ async function privateRoot() {
 
 async function useFolder(handle) {
   rememberEditor();
-  const dirty = tabs.filter((tab) => bufferOf(tab) !== tab.saved);
+  const dirty = tabs.filter((tab) => tabDirty(tab));
   if (dirty.length) {
     const choice = await askSave("Save changes before opening this folder?");
     if (choice === "cancel") {
@@ -828,6 +828,23 @@ function currentTab() {
   return tabs.find((tab) => tab.id === currentId) || null;
 }
 
+/* The editor stores LF. A library file can be CRLF, and that difference is not an edit. */
+function editorText(text) {
+  return (text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+function tabDirty(tab) {
+  if (!tab || tab.web) {
+    return false;
+  }
+  return editorText(bufferOf(tab)) !== editorText(tab.saved);
+}
+
+/* A library tab keeps the shared text. The private copy uses the same path. */
+function privateBuffer(tab) {
+  return Boolean(tab && tab.path && !tab.shared && files.has(tab.path));
+}
+
 function bufferOf(tab) {
   if (!tab || tab.web) {
     return "";
@@ -835,7 +852,7 @@ function bufferOf(tab) {
   if (tab.id === currentId) {
     return editor.value;
   }
-  if (tab.path && files.has(tab.path)) {
+  if (privateBuffer(tab)) {
     return files.get(tab.path);
   }
   if (tab.text) {
@@ -852,7 +869,7 @@ function rememberEditor() {
   if (!tab || tab.web) {
     return;
   }
-  if (tab.path && files.has(tab.path)) {
+  if (privateBuffer(tab)) {
     files.set(tab.path, editor.value);
   } else {
     tab.text = editor.value;
@@ -1027,9 +1044,14 @@ async function saveIntoPrivate(tab) {
   if (!(await writeBrowserCopy(tab.path, text))) {
     return false;
   }
+  tab.shared = false;
+  tab.view = false;
   tab.saved = text;
   tab.text = "";
   syncMount();
+  if (currentId === tab.id) {
+    showTab(tab);
+  }
   if (listSource !== "private") {
     listSource = "private";
     paintSourceSwitch();
@@ -1048,7 +1070,7 @@ async function saveDirty(tab) {
   if (!tab.path || tab.path === "boot") {
     return saveAs(tab);
   }
-  if (!files.has(tab.path)) {
+  if (tab.shared || !files.has(tab.path)) {
     return saveIntoPrivate(tab);
   }
   return saveTab(tab);
@@ -1070,7 +1092,7 @@ function renderTabs() {
     const select = document.createElement("button");
     select.type = "button";
     select.className = "tab-name";
-    const dirty = !tab.web && bufferOf(tab) !== tab.saved;
+    const dirty = tabDirty(tab);
     select.textContent = (dirty ? "• " : "") + (dup ? tab.path : leaf);
     select.title = tab.path || tab.title;
     select.addEventListener("click", () => {
@@ -1287,7 +1309,7 @@ function showTab(tab, opts) {
   clearHighlight();
   if (!tab.path) {
     editor.value = tab.text ?? "";
-  } else if (files.has(tab.path)) {
+  } else if (privateBuffer(tab)) {
     editor.value = files.get(tab.path);
   } else {
     editor.value = tab.text || shipped.get(tab.path) || "";
@@ -1451,7 +1473,7 @@ async function closeTab(id) {
   const label = tab.path || tab.title;
   if (tab.web) {
     tab.frame.remove();
-  } else if (bufferOf(tab) !== tab.saved) {
+  } else if (tabDirty(tab)) {
     const choice = await askSave("Save changes to " + label + " before closing?");
     if (choice === "cancel") {
       return;
@@ -1460,7 +1482,7 @@ async function closeTab(id) {
       if (!(await saveDirty(tab))) {
         return;
       }
-    } else if (tab.path && files.has(tab.path)) {
+    } else if (privateBuffer(tab)) {
       files.set(tab.path, tab.saved);
     }
   }
@@ -1736,6 +1758,17 @@ function hideDebugBar() {
   refreshStrip();
 }
 
+function lineOfIndex(text, index) {
+  let n = 1;
+  const stop = Math.max(0, Math.min(index, text.length));
+  for (let i = 0; i < stop; i++) {
+    if (text.charCodeAt(i) === 10) {
+      n++;
+    }
+  }
+  return n;
+}
+
 function showDebugBar(path, line, name) {
   const where = path ? path + (line ? ":" + line : "") : "";
   debugStatus.textContent = ["debugging", name, where].filter(Boolean).join(" · ");
@@ -1840,16 +1873,146 @@ function runKind(event) {
   return "";
 }
 
+/* A bare caret is not a highlight. RUN uses a selected word only. */
+function highlightedWord() {
+  const tab = currentTab();
+  if (!tab || tab.web) {
+    return "";
+  }
+  const start = editor.selectionStart;
+  const end = editor.selectionEnd;
+  if (start === end) {
+    return "";
+  }
+  const raw = editor.value.slice(start, end).trim();
+  if (!raw || /[ \t\r\n]/.test(raw)) {
+    return "";
+  }
+  return raw;
+}
+
+/* Last `: NAME` in source. Skips line comments, `( … )`, and quoted strings.
+   `:NONAME` is not a name. Same scan as the Mac editor. */
+function lastColonName(source) {
+  if (!source) {
+    return "";
+  }
+  let last = "";
+  let index = 0;
+  let lineComment = false;
+  let paren = 0;
+  const len = source.length;
+
+  function takeToken() {
+    while (index < len) {
+      const ch = source[index];
+      if (ch === "\n" || ch === "\r") {
+        lineComment = false;
+        index += 1;
+        continue;
+      }
+      if (lineComment || ch === " " || ch === "\t") {
+        index += 1;
+        continue;
+      }
+      const start = index;
+      while (index < len) {
+        const c = source[index];
+        if (c === " " || c === "\t" || c === "\n" || c === "\r") {
+          break;
+        }
+        index += 1;
+      }
+      const token = source.slice(start, index);
+      if (paren > 0) {
+        for (const c of token) {
+          if (c === "(") {
+            paren += 1;
+          } else if (c === ")") {
+            paren -= 1;
+          }
+        }
+        if (paren < 0) {
+          paren = 0;
+        }
+        continue;
+      }
+      if (token === "\\") {
+        lineComment = true;
+        continue;
+      }
+      if (token === "(") {
+        paren = 1;
+        continue;
+      }
+      return token;
+    }
+    return "";
+  }
+
+  function skipQuote(escaped) {
+    while (index < len) {
+      const ch = source[index];
+      index += 1;
+      if (escaped && ch === "\\") {
+        if (index < len) {
+          index += 1;
+        }
+        continue;
+      }
+      if (ch === "\"" || ch === "\n" || ch === "\r") {
+        return;
+      }
+    }
+  }
+
+  function skipParenString() {
+    while (index < len) {
+      const ch = source[index];
+      index += 1;
+      if (ch === ")" || ch === "\n" || ch === "\r") {
+        return;
+      }
+    }
+  }
+
+  while (index < len) {
+    const token = takeToken();
+    if (!token) {
+      break;
+    }
+    if (token === ".(") {
+      skipParenString();
+      continue;
+    }
+    if (token === ".\"" || token === "S\"" || token === "C\"" || token === "ABORT\"") {
+      skipQuote(false);
+      continue;
+    }
+    if (token === "S\\\"") {
+      skipQuote(true);
+      continue;
+    }
+    if (token === ":") {
+      const name = takeToken();
+      if (name && name.toUpperCase() !== "NONAME") {
+        last = name;
+      }
+    }
+  }
+  return last;
+}
+
 function fillRunLine(kind) {
   if (!ready || busy || api.keyWaiting() || !kind) {
     return;
   }
-  let name = caretWord();
+  let name = highlightedWord();
   if (!name) {
-    name = api.lastName() || "";
+    name = lastColonName(bufferOf(currentTab())) || api.lastName() || "";
   }
   if (!name) {
-    write("RUN: no word under the caret, and LAST is empty\n");
+    write("RUN: no highlighted word, and LAST is empty\n");
     return;
   }
   const line = kind === "debug" ? "DEBUG " + name : kind === "bpgo" ? "BPGO " + name : name;
@@ -1983,6 +2146,8 @@ function showDebug(path, line, name, off, len) {
     return;
   }
   lastWash = { path, name, start: range[0], end: range[1] };
+  /* The engine line is the colon definition. The wash is the token. */
+  showDebugBar(path, lineOfIndex(text, range[0]), name);
   paintHighlight(text, range[0], range[1]);
   editor.setSelectionRange(range[0], range[0]);
   scrollIndex(range[0]);
@@ -2159,8 +2324,22 @@ function debugCode(event) {
   return null;
 }
 
+/* The stepper leaves ">> NAME" without a newline so the next pause can
+   pad S/R onto that line. A prompt chunk still sitting at the end of the
+   log is drawn on that same line (>> R> ok(0)>). Drop it for the eval. */
+function hidePrompt() {
+  const last = chunks[chunks.length - 1];
+  if (!(last && last.cls === "" && /^ok\(\d+\)> $/.test(last.text))) {
+    return;
+  }
+  const tail = currentTail();
+  chunks.pop();
+  render(tail, false);
+}
+
 async function runEval(source) {
   shownOut = 0;
+  hidePrompt();
   const code = await api.eval(source);
   const text = api.output() || "";
   const rest = text.slice(shownOut);
@@ -2250,6 +2429,7 @@ async function loadFile(fresh) {
     write("include failed: " + (err && err.message ? err.message : String(err)) + "\n", "err");
     setPrompt();
   } finally {
+    gfx.close();
     busy = false;
     refreshStrip();
     paintBreaks();
@@ -2315,7 +2495,7 @@ function urlForAddressField(raw) {
   if (!/\s/.test(text) && (text === "localhost" || text.startsWith("localhost:") || text.startsWith("127.0.0.1") || (text.includes(".") && !(text.endsWith(".") && text.split(".").length === 2)))) {
     return "https://" + text;
   }
-  return "https://duckduckgo.com/?q=" + encodeURIComponent(text);
+  return "https://wiby.me/?q=" + encodeURIComponent(text);
 }
 
 function webHost(url) {
@@ -2584,7 +2764,7 @@ document.querySelector("#open-folder").addEventListener("click", async () => {
 
 const Module = await createEditForth({
   locateFile(path, prefix) {
-    return (prefix || "") + path + "?v=86";
+    return (prefix || "") + path + "?v=104";
   },
 });
 Module._forthDebug = (path, line, name, off, len) => {
@@ -2655,6 +2835,590 @@ function pumpDebug() {
   refreshStrip();
 }
 Module._forthPump = pumpDebug;
+
+/* GRAPHICS window over the editor. Forth still owns the buffers.
+   Keys go through the same postKey queue the console KEY already uses. */
+const gfx = (() => {
+  const host = document.querySelector("#gfx-host");
+  const title = document.querySelector("#gfx-title");
+  const canvas = document.querySelector("#gfx");
+  const ctx = canvas.getContext("2d", { alpha: false });
+  const cellW = 8;
+  const cellH = 16;
+  const g = {
+    live: false,
+    name: "Graphics",
+    cols: 80,
+    rows: 25,
+    pw: 640,
+    ph: 400,
+    depth: 0,
+    pix: null,
+    grid: null,
+    x: 0,
+    y: 0,
+    buttons: 0,
+    audio: null,
+  };
+  let atlas = null;
+  let palette = null;
+  let frame = null;
+
+  function ensurePalette() {
+    if (palette) {
+      return;
+    }
+    palette = new Uint8Array(256 * 3);
+    const rgb16 = [
+      [0, 0, 0], [0, 0, 170], [0, 170, 0], [0, 170, 170],
+      [170, 0, 0], [170, 0, 170], [170, 85, 0], [170, 170, 170],
+      [85, 85, 85], [85, 85, 255], [85, 255, 85], [85, 255, 255],
+      [255, 85, 85], [255, 85, 255], [255, 255, 85], [255, 255, 255],
+    ];
+    for (let i = 0; i < 16; i++) {
+      palette[i * 3] = rgb16[i][0];
+      palette[i * 3 + 1] = rgb16[i][1];
+      palette[i * 3 + 2] = rgb16[i][2];
+    }
+    let idx = 16;
+    for (let r = 0; r < 6; r++) {
+      for (let gg = 0; gg < 6; gg++) {
+        for (let b = 0; b < 6; b++) {
+          palette[idx * 3] = r * 51;
+          palette[idx * 3 + 1] = gg * 51;
+          palette[idx * 3 + 2] = b * 51;
+          idx += 1;
+        }
+      }
+    }
+    for (let i = 0; i < 24; i++) {
+      const v = Math.min(255, 8 + i * 10);
+      palette[(232 + i) * 3] = v;
+      palette[(232 + i) * 3 + 1] = v;
+      palette[(232 + i) * 3 + 2] = v;
+    }
+  }
+
+  function ensureAtlas() {
+    if (atlas) {
+      return;
+    }
+    const n = 95;
+    const sheet = document.createElement("canvas");
+    sheet.width = cellW * n;
+    sheet.height = cellH;
+    const pen = sheet.getContext("2d", { willReadFrequently: true });
+    pen.clearRect(0, 0, sheet.width, sheet.height);
+    pen.fillStyle = "#ffffff";
+    pen.textBaseline = "middle";
+    pen.font = "12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+    for (let i = 0; i < n; i++) {
+      const ch = String.fromCharCode(32 + i);
+      pen.save();
+      pen.beginPath();
+      pen.rect(i * cellW, 0, cellW, cellH);
+      pen.clip();
+      const tw = pen.measureText(ch).width || cellW;
+      const scale = Math.min(1, (cellW - 1) / tw);
+      pen.translate(i * cellW, cellH / 2);
+      pen.scale(scale, 1);
+      pen.fillText(ch, 0, 0);
+      pen.restore();
+    }
+    atlas = pen.getImageData(0, 0, sheet.width, sheet.height);
+  }
+
+  function paint() {
+    if (!frame || frame.width !== g.pw || frame.height !== g.ph) {
+      frame = ctx.createImageData(g.pw, g.ph);
+    }
+    const data = frame.data;
+    data.fill(0);
+    const n = g.pw * g.ph;
+    for (let i = 0; i < n; i++) {
+      data[i * 4 + 3] = 255;
+    }
+    if (g.pix && g.depth === 1) {
+      const stride = (g.pw + 7) >> 3;
+      for (let y = 0; y < g.ph; y++) {
+        for (let x = 0; x < g.pw; x++) {
+          const bi = y * stride + (x >> 3);
+          if (bi >= g.pix.length) {
+            continue;
+          }
+          if ((g.pix[bi] & (1 << (x & 7))) === 0) {
+            continue;
+          }
+          const o = (y * g.pw + x) * 4;
+          data[o] = 178;
+          data[o + 1] = 255;
+          data[o + 2] = 178;
+        }
+      }
+    } else if (g.pix && g.depth === 8) {
+      ensurePalette();
+      const m = Math.min(g.pix.length, n);
+      for (let i = 0; i < m; i++) {
+        const p = g.pix[i] * 3;
+        const o = i * 4;
+        data[o] = palette[p];
+        data[o + 1] = palette[p + 1];
+        data[o + 2] = palette[p + 2];
+      }
+    } else if (g.pix && g.depth === 32) {
+      const m = Math.min(g.pix.length >> 2, n);
+      for (let i = 0; i < m; i++) {
+        const s = i * 4;
+        const o = i * 4;
+        data[o] = g.pix[s + 2];
+        data[o + 1] = g.pix[s + 1];
+        data[o + 2] = g.pix[s];
+      }
+    }
+    if (g.grid) {
+      ensureAtlas();
+      const cells = Math.min(g.grid.length, g.cols * g.rows);
+      for (let i = 0; i < cells; i++) {
+        const ch = g.grid[i];
+        if (ch === 0 || ch === 32) {
+          continue;
+        }
+        stamp(data, i % g.cols, (i / g.cols) | 0, ch);
+      }
+    }
+    ctx.putImageData(frame, 0, 0);
+  }
+
+  function paperInk(col, row) {
+    if (g.depth === 8 && g.pix) {
+      const ix = col * cellW + (cellW >> 1);
+      const iy = row * cellH + (cellH >> 1);
+      const idx = g.pix[iy * g.pw + ix] || 0;
+      return idx < 8 ? [255, 255, 255] : [0, 0, 0];
+    }
+    if (g.depth === 32 && g.pix) {
+      const ix = col * cellW + (cellW >> 1);
+      const iy = row * cellH + (cellH >> 1);
+      const s = (iy * g.pw + ix) * 4;
+      const lum = (g.pix[s + 2] * 3 + g.pix[s + 1] * 6 + g.pix[s]) / 10;
+      return lum > 140 ? [0, 0, 0] : [255, 255, 255];
+    }
+    return [178, 255, 178];
+  }
+
+  function stamp(data, col, row, ch) {
+    const rgb = paperInk(col, row);
+    const x0 = col * cellW;
+    const y0 = row * cellH;
+    /* CP437 box and shade bytes used by CLOCK. 219 is a full cell. */
+    const shade = ch === 177 || ch === 178;
+    const box = ch === 186 || ch === 185 || ch === 200 || ch === 201 || ch === 202
+      || ch === 203 || ch === 204 || ch === 205 || ch === 206 || ch === 187 || ch === 188;
+    if (ch === 219 || shade || box) {
+      for (let y = 0; y < cellH; y++) {
+        for (let x = 0; x < cellW; x++) {
+          let on = ch === 219;
+          if (ch === 177) {
+            on = ((x + y) & 3) === 0;
+          } else if (ch === 178) {
+            on = ((x ^ y) & 1) === 0;
+          } else if (box) {
+            const h = y === 6 || y === 9;
+            const v = x === 2 || x === 5;
+            const down = y >= 6;
+            const up = y <= 9;
+            const right = x >= 2;
+            const left = x <= 5;
+            if (ch === 205) on = h;
+            else if (ch === 186) on = v;
+            else if (ch === 201) on = (v && down) || (h && right);
+            else if (ch === 187) on = (v && down) || (h && left);
+            else if (ch === 200) on = (v && up) || (h && right);
+            else if (ch === 188) on = (v && up) || (h && left);
+            else if (ch === 203) on = h || (v && down);
+            else if (ch === 202) on = h || (v && up);
+            else if (ch === 204) on = v || (h && right);
+            else if (ch === 185) on = v || (h && left);
+            else on = h || v;
+          }
+          if (!on) {
+            continue;
+          }
+          const o = ((y0 + y) * g.pw + (x0 + x)) * 4;
+          data[o] = rgb[0];
+          data[o + 1] = rgb[1];
+          data[o + 2] = rgb[2];
+        }
+      }
+      return;
+    }
+    const glyph = ch >= 32 && ch <= 126 ? ch : 63;
+    const src = (glyph - 32) * cellW;
+    for (let y = 0; y < cellH; y++) {
+      for (let x = 0; x < cellW; x++) {
+        const a = atlas.data[(y * atlas.width + src + x) * 4];
+        if (a < 80) {
+          continue;
+        }
+        const o = ((y0 + y) * g.pw + (x0 + x)) * 4;
+        data[o] = rgb[0];
+        data[o + 1] = rgb[1];
+        data[o + 2] = rgb[2];
+      }
+    }
+  }
+
+  function place(ev) {
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) {
+      return;
+    }
+    let x = Math.floor((ev.clientX - rect.left) / rect.width * g.pw);
+    let yTop = Math.floor((ev.clientY - rect.top) / rect.height * g.ph);
+    if (x < 0) {
+      x = 0;
+    }
+    if (yTop < 0) {
+      yTop = 0;
+    }
+    if (x >= g.pw) {
+      x = g.pw - 1;
+    }
+    if (yTop >= g.ph) {
+      yTop = g.ph - 1;
+    }
+    g.x = x;
+    g.y = g.ph - 1 - yTop;
+    let buttons = ev.buttons & 7;
+    if ((buttons & 1) && ev.ctrlKey) {
+      buttons = (buttons & ~1) | 2;
+    }
+    g.buttons = buttons;
+  }
+
+  canvas.addEventListener("pointerdown", (ev) => {
+    if (!g.live) {
+      return;
+    }
+    try {
+      canvas.setPointerCapture(ev.pointerId);
+    } catch (err) {
+      /* The pointer can already be gone. */
+    }
+    canvas.focus();
+    place(ev);
+    ev.preventDefault();
+  });
+  canvas.addEventListener("pointermove", (ev) => {
+    if (!g.live) {
+      return;
+    }
+    place(ev);
+  });
+  canvas.addEventListener("pointerup", (ev) => {
+    if (!g.live) {
+      return;
+    }
+    place(ev);
+  });
+  canvas.addEventListener("pointercancel", () => {
+    g.buttons = 0;
+  });
+  canvas.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+  });
+  canvas.addEventListener("wheel", (ev) => {
+    if (!g.live) {
+      return;
+    }
+    ev.preventDefault();
+    api.postKey(ev.deltaY < 0 ? 210 : 211);
+  }, { passive: false });
+
+  g.open = (cols, rows) => {
+    g.cols = cols > 0 ? cols : 80;
+    g.rows = rows > 0 ? rows : 25;
+    g.pw = g.cols * cellW;
+    g.ph = g.rows * cellH;
+    canvas.width = g.pw;
+    canvas.height = g.ph;
+    g.pix = null;
+    g.grid = null;
+    g.depth = 0;
+    g.buttons = 0;
+    g.live = true;
+    host.hidden = false;
+    title.textContent = g.name;
+    canvas.setAttribute("aria-label", g.name);
+    paint();
+    canvas.focus();
+  };
+  g.close = () => {
+    g.live = false;
+    g.buttons = 0;
+    host.hidden = true;
+  };
+  g.setName = (name) => {
+    g.name = name && name.length ? name : "Graphics";
+    title.textContent = g.name;
+    canvas.setAttribute("aria-label", g.name);
+  };
+  g.chars = (heap, addr, n) => {
+    g.grid = new Uint8Array(heap.subarray(addr, addr + n));
+    paint();
+  };
+  g.pixels = (heap, addr, n, depth) => {
+    g.depth = depth;
+    g.pix = new Uint8Array(heap.subarray(addr, addr + n));
+    paint();
+  };
+  g.tone = (freq, tenths) => {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) {
+      return;
+    }
+    const sec = Math.max(0, Math.min(tenths | 0, 50)) / 10;
+    if (!sec) {
+      return;
+    }
+    if (!g.audio) {
+      g.audio = new Ctx();
+    }
+    const hz = Math.max(20, Math.min(freq | 0, 12000));
+    const osc = g.audio.createOscillator();
+    const gain = g.audio.createGain();
+    osc.type = "sine";
+    osc.frequency.value = hz;
+    const now = g.audio.currentTime;
+    gain.gain.setValueAtTime(0.08, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + sec);
+    osc.connect(gain);
+    gain.connect(g.audio.destination);
+    osc.start(now);
+    osc.stop(now + sec);
+  };
+  g.keyCode = (event) => {
+    if (event.metaKey || event.ctrlKey || event.altKey) {
+      return null;
+    }
+    if (event.key === "Escape") {
+      return 27;
+    }
+    if (event.key === "Enter") {
+      return 13;
+    }
+    if (event.key === "Backspace") {
+      return 8;
+    }
+    if (event.key === "Delete") {
+      return 127;
+    }
+    if (event.key === "ArrowUp") {
+      return 200;
+    }
+    if (event.key === "ArrowDown") {
+      return 208;
+    }
+    if (event.key === "ArrowLeft") {
+      return 203;
+    }
+    if (event.key === "ArrowRight") {
+      return 205;
+    }
+    if (event.key === "F1") {
+      return 187;
+    }
+    if (event.key.length === 1) {
+      return event.key.charCodeAt(0);
+    }
+    return null;
+  };
+  return g;
+})();
+Module._gfx = gfx;
+
+/* Decoded image for IMAGEVIEW64. gfx.close must not clear this. */
+Module._img = (() => {
+  const host = document.querySelector("#gfx-host");
+  const bar = document.querySelector("#gfx-img");
+  const pick = document.querySelector("#gfx-img-pick");
+  const cancel = document.querySelector("#gfx-img-cancel");
+  const fileInput = document.createElement("input");
+  const img = {
+    w: 0,
+    h: 0,
+    bgra: null,
+    pending: false,
+    lastIor: -2,
+  };
+  fileInput.id = "gfx-img-file";
+  fileInput.type = "file";
+  fileInput.accept = "image/*,.png,.jpg,.jpeg,.gif,.webp,.bmp";
+  fileInput.hidden = true;
+  document.body.appendChild(fileInput);
+
+  function hideBar() {
+    if (bar) {
+      bar.hidden = true;
+    }
+    if (host && !(Module._gfx && Module._gfx.live)) {
+      host.hidden = true;
+    }
+  }
+
+  function finish(ior) {
+    img.lastIor = ior | 0;
+    img.pending = false;
+    hideBar();
+  }
+
+  async function decodeBlob(blob) {
+    const bitmap = await createImageBitmap(blob);
+    try {
+      const w = bitmap.width | 0;
+      const h = bitmap.height | 0;
+      if (w < 1 || h < 1 || w > 8192 || h > 8192) {
+        return -2;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(bitmap, 0, 0);
+      const data = ctx.getImageData(0, 0, w, h).data;
+      const bgra = new Uint8Array(w * h * 4);
+      for (let i = 0; i < w * h; i++) {
+        const s = i * 4;
+        bgra[s] = data[s + 2];
+        bgra[s + 1] = data[s + 1];
+        bgra[s + 2] = data[s];
+        bgra[s + 3] = data[s + 3];
+      }
+      img.bgra = bgra;
+      img.w = w;
+      img.h = h;
+      return 0;
+    } finally {
+      bitmap.close();
+    }
+  }
+
+  img.choose = () => {
+    img.pending = true;
+    img.lastIor = -2;
+    if (host) {
+      host.hidden = false;
+    }
+    if (bar) {
+      bar.hidden = false;
+    }
+  };
+
+  img.loadPath = (path) => {
+    img.pending = true;
+    img.lastIor = -2;
+    fetch(String(path || ""), { cache: "no-store" }).then(async (res) => {
+      if (!img.pending) {
+        return;
+      }
+      if (!res.ok) {
+        finish(-2);
+        return;
+      }
+      finish(await decodeBlob(await res.blob()));
+    }).catch(() => {
+      if (img.pending) {
+        finish(-2);
+      }
+    });
+  };
+
+  /* Win zoom: ix = cx + (sx - dw/2) * 100 / z. Out of range is opaque black. */
+  img.render = (heap, dest, dw, dh, cx, cy, zoom) => {
+    const src = img.bgra;
+    const iw = img.w | 0;
+    const ih = img.h | 0;
+    dw |= 0;
+    dh |= 0;
+    if (!heap || !src || dest <= 0 || dw < 1 || dh < 1 || dw > 4096 || dh > 4096 || iw < 1 || ih < 1) {
+      return -1;
+    }
+    const bytes = dw * dh * 4;
+    if (dest + bytes > heap.length) {
+      return -1;
+    }
+    let z = zoom | 0;
+    if (z < 1) {
+      z = 1;
+    }
+    const halfW = (dw / 2) | 0;
+    const halfH = (dh / 2) | 0;
+    for (let sy = 0; sy < dh; sy++) {
+      const iy = (cy + Math.trunc((sy - halfH) * 100 / z)) | 0;
+      const row = dest + sy * dw * 4;
+      for (let sx = 0; sx < dw; sx++) {
+        const ix = (cx + Math.trunc((sx - halfW) * 100 / z)) | 0;
+        const o = row + sx * 4;
+        if (ix < 0 || iy < 0 || ix >= iw || iy >= ih) {
+          heap[o] = 0;
+          heap[o + 1] = 0;
+          heap[o + 2] = 0;
+          heap[o + 3] = 255;
+        } else {
+          const s = (iy * iw + ix) * 4;
+          heap[o] = src[s];
+          heap[o + 1] = src[s + 1];
+          heap[o + 2] = src[s + 2];
+          heap[o + 3] = 255;
+        }
+      }
+    }
+    return 0;
+  };
+
+  if (pick) {
+    pick.addEventListener("click", () => {
+      if (!img.pending) {
+        return;
+      }
+      fileInput.value = "";
+      fileInput.click();
+    });
+  }
+  if (cancel) {
+    cancel.addEventListener("click", () => {
+      if (img.pending) {
+        finish(-1);
+      }
+    });
+  }
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!img.pending) {
+      return;
+    }
+    if (!file) {
+      finish(-1);
+      return;
+    }
+    decodeBlob(file).then(finish).catch(() => finish(-2));
+  });
+  fileInput.addEventListener("cancel", () => {
+    if (img.pending) {
+      finish(-1);
+    }
+  });
+  if (bar) {
+    bar.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && img.pending) {
+        event.preventDefault();
+        event.stopPropagation();
+        finish(-1);
+      }
+    });
+  }
+  return img;
+})();
 
 write(BANNER);
 let resourcesErr = null;
@@ -2746,7 +3510,7 @@ document.querySelector("#dbg-go").addEventListener("click", () => postDebug("g".
 document.querySelector("#dbg-stop").addEventListener("click", () => postDebug(27));
 document.querySelector("#save").addEventListener("click", () => {
   const tab = currentTab();
-  if (tab && bufferOf(tab) !== tab.saved) {
+  if (tab && tabDirty(tab)) {
     saveDirty(tab);
   }
 });
@@ -2799,7 +3563,7 @@ document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "s") {
     event.preventDefault();
     const tab = currentTab();
-    if (tab && bufferOf(tab) !== tab.saved) {
+    if (tab && tabDirty(tab)) {
       saveDirty(tab);
     }
   }
@@ -2849,7 +3613,7 @@ editor.addEventListener("input", () => {
   if (!tab || tab.web) {
     return;
   }
-  if (tab.path && files.has(tab.path)) {
+  if (privateBuffer(tab)) {
     files.set(tab.path, editor.value);
   } else {
     tab.text = editor.value;
@@ -3199,12 +3963,22 @@ async function submitLine(folderPick, lineOverride) {
     write("include failed: " + (err && err.message ? err.message : String(err)) + "\n", "err");
     setPrompt();
   } finally {
+    gfx.close();
     busy = false;
     setPrompt(true);
   }
 }
 
 document.addEventListener("keydown", (event) => {
+  if (gfx.live) {
+    const code = gfx.keyCode(event);
+    if (code != null) {
+      event.preventDefault();
+      event.stopPropagation();
+      api.postKey(code);
+    }
+    return;
+  }
   if (event.isComposing || (!api.keyWaiting() && !busy)) {
     return;
   }

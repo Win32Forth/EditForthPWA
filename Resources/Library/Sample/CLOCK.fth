@@ -28,10 +28,10 @@ only forth also graphics
 : ," 	( " text" -- )
 		[CHAR] " PARSE HERE OVER 1+ ALLOT PLACE ;
 
-: FOR	( -- a1 )
-		HERE ; IMMEDIATE
+: FOR	( -- )  \ same as BEGIN. HERE matched F-PC's data-stack BEGIN.
+		POSTPONE BEGIN ; IMMEDIATE
 
-: NEXT	( a1 -- )
+: NEXT	( -- )
 		?COMP	POSTPONE 1- POSTPONE UNTIL ; IMMEDIATE
 
 : HMS 	( -- hour min sec )
@@ -222,4 +222,6 @@ VARIABLE LAST-MO        VARIABLE LAST-YR
 : CLOCK	( -- )
 			TIC/TOK ;
 
+\ Back to the console. GRAPHICS CR would open the canvas during Include.
+ONLY FORTH
 .( CLOCK to run the Clock ) CR
