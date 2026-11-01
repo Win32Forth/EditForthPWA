@@ -7,7 +7,7 @@
 \ given name. Same idea on 64Forth wordlists.
 \
 \ Cold-loaded: Kernel/forth.s .incbin "xref.fth" (after vocsys.fth).
-\ Original TCOM source: Library/TCOM/REF.FTH (unchanged).
+\ Library/TCOM is not in this tree. REF lives in this file.
 \
 \ Use (always present after boot):
 \   REF DUP

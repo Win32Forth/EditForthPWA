@@ -1,4 +1,4 @@
-import createEditForth from "./editforth.js?v=104";
+import createEditForth from "./editforth.js?v=105";
 
 const log = document.querySelector("#log");
 const installBtn = document.querySelector("#install");
@@ -32,7 +32,7 @@ const DBG_OVER = (2 << 24) | 16;
 const DBG_INTO = (2 << 24) | 17;
 const DBG_OUT = (2 << 24) | 18;
 
-const BANNER = "=== EditForthPWA 1.0.0 === Oct 30, 2026 9:36 PM ===\n";
+const BANNER = "=== EditForthPWA 1.1.0 === Oct 31, 2026 10:16 PM ===\n";
 
 const SEED =
   "\\ Cmd+Enter or Ctrl+Enter loads this file.\n" +
@@ -2470,6 +2470,7 @@ menuPanel.addEventListener("click", (event) => {
 });
 document.addEventListener("click", () => setMenu(false));
 const FORTH_STANDARD = "https://forth-standard.org/";
+const GITHUB_REPO = "https://github.com/Win32Forth/EditForthPWA";
 const webTabBox = document.querySelector("#web-tab");
 const webFrames = document.querySelector("#web-frames");
 const webAddress = document.querySelector("#web-address");
@@ -2739,6 +2740,13 @@ document.querySelector("#show-boot").addEventListener("click", () => {
 
 document.querySelector("#open-web").addEventListener("click", () => openWebPage());
 
+function openGitHub() {
+  setMenu(false);
+  window.open(GITHUB_REPO, "_blank", "noopener,noreferrer");
+}
+
+document.querySelector("#open-github").addEventListener("click", () => openGitHub());
+
 document.querySelector("#open-folder").addEventListener("click", async () => {
   setMenu(false);
   if (typeof window.showDirectoryPicker !== "function") {
@@ -2764,7 +2772,7 @@ document.querySelector("#open-folder").addEventListener("click", async () => {
 
 const Module = await createEditForth({
   locateFile(path, prefix) {
-    return (prefix || "") + path + "?v=104";
+    return (prefix || "") + path + "?v=105";
   },
 });
 Module._forthDebug = (path, line, name, off, len) => {

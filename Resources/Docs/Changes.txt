@@ -2,7 +2,16 @@ EditForthPWA changes
 --------------------
 
 This is the feature history from the commits on main, starting with the
-first checkin. The hash is the GitHub commit. 1.0.0 is the current release.
+first checkin. The hash is the GitHub commit. 1.1.0 is the current version.
+
+1.1.0  Oct 31, 2026
+  Sample gained the EditForth ports of the old TCOM programs: ALLSPECS,
+  BANNER, CARD, COMPLEX, DRAW, FILTER, FPMATH, GLOBAL, GSS, ICON, KOKO,
+  LEDIT, LINES, LINESCAN, LINEWALK, LOOK, MANGEN, MANSHOW, OBJECT, RINGS,
+  SPLAT, SPREAD, SSBLIT, SWINDOW, SZ, TEXTFORM, ZIM, and ZLIST, plus
+  COMPLEX.txt and LOOK.txt. EDIT64, VED64, and ZTREE are not in this
+  sample list. ZTREE needs a shell. Some of the new programs still need
+  a debug pass. Open GitHub in Browser opens the EditForthPWA repository.
 
 1.0.0  Oct 30, 2026
   Sample programs draw on a canvas in the editor. DOODLE64,
