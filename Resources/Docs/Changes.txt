@@ -2,7 +2,17 @@ EditForthPWA changes
 --------------------
 
 This is the feature history from the commits on main, starting with the
-first checkin. The hash is the GitHub commit. 1.1.0 is the current version.
+first checkin. The hash is the GitHub commit. 1.1.1 is the current version.
+
+1.1.1  Nov 2, 2026
+  Library/Forth1968CM is Charles Moore's 1968 IBM 1130 Forth. The
+  folder was renamed from the earlier web project. Open main.fth,
+  Include it, then type FORTH-1968. The simulator pauses so the
+  page can paint while it assembles, runs, and waits for a key.
+  SPLAT no longer asks for a password. Esc returns to the console.
+  LINEWALK stays inside the window. MANGEN and MANSHOW fill the
+  graphics window. KOKO no longer prompts for A, BB, and C.
+  Cache name editforthpwa-106. No GitHub release.
 
 1.1.0  Oct 31, 2026
   Sample gained the EditForth ports of the old TCOM programs: ALLSPECS,

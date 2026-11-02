@@ -1,4 +1,4 @@
-import createEditForth from "./editforth.js?v=105";
+import createEditForth from "./editforth.js?v=106";
 
 const log = document.querySelector("#log");
 const installBtn = document.querySelector("#install");
@@ -32,7 +32,7 @@ const DBG_OVER = (2 << 24) | 16;
 const DBG_INTO = (2 << 24) | 17;
 const DBG_OUT = (2 << 24) | 18;
 
-const BANNER = "=== EditForthPWA 1.1.0 === Oct 31, 2026 10:16 PM ===\n";
+const BANNER = "=== EditForthPWA 1.1.1 === Nov 2, 2026 5:06 PM ===\n";
 
 const SEED =
   "\\ Cmd+Enter or Ctrl+Enter loads this file.\n" +
@@ -2772,7 +2772,7 @@ document.querySelector("#open-folder").addEventListener("click", async () => {
 
 const Module = await createEditForth({
   locateFile(path, prefix) {
-    return (prefix || "") + path + "?v=105";
+    return (prefix || "") + path + "?v=106";
   },
 });
 Module._forthDebug = (path, line, name, off, len) => {
