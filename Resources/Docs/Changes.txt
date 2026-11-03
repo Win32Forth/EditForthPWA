@@ -2,7 +2,15 @@ EditForthPWA changes
 --------------------
 
 This is the feature history from the commits on main, starting with the
-first checkin. The hash is the GitHub commit. 1.1.1 is the current version.
+first checkin. The hash is the GitHub commit. 1.1.2 is the current version.
+
+1.1.2  Nov 2, 2026
+  LINESCAN no longer throws stack underflow on the first crawl step.
+  CLAMP-STEP keeps the step on the stack through the bounds check.
+  SSBLIT shows the logo and the moving Z. The loop clears the pixel
+  map without blitting, then draws, then refreshes once. An empty
+  blit was the frame the page kept.
+  Cache name editforthpwa-107. No GitHub release.
 
 1.1.1  Nov 2, 2026
   Library/Forth1968CM is Charles Moore's 1968 IBM 1130 Forth. The

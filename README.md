@@ -1,6 +1,6 @@
 # EditForthPWA
 
-A 32-bit EditForth that runs in the browser. This version is 1.1.1. Cells are 4 bytes. The engine is C (`kernel/ef32.c`), compiled with `emcc` to WebAssembly. The page is the editor: a file tree, the source being edited, and a Forth console under it.
+A 32-bit EditForth that runs in the browser. This version is 1.1.2. Cells are 4 bytes. The engine is C (`kernel/ef32.c`), compiled with `emcc` to WebAssembly. The page is the editor: a file tree, the source being edited, and a Forth console under it.
 
 This folder is not an Xcode project. EditForth, EditForthWin, EditForthLin, and TZEditForth stay as they are. This tree does not write their document folders.
 
@@ -38,11 +38,11 @@ The page cache is named in `web/sw.js`. After a rebuild, reload the page so the 
 
 ## Editor
 
-The window is white (`#ffffff`) with black text (`#111111`). The title bar reads `EditForth 1.1.1`. Include is a black button. Errors are `#9b1c1c`.
+The window is white (`#ffffff`) with black text (`#111111`). The title bar reads `EditForth 1.1.2`. Include is a black button. Errors are `#9b1c1c`.
 
 The bar between the source and the console drags. Dragging up gives the console more room. The height is remembered (`editforth.consoleHeight`). The console stays under the source. There is no undock. The bar on the right of the file list drags sideways. The list starts at 220px, and the width is remembered (`editforth.treeWidth`). Save sits with New and Share. Close is the tab’s own button.
 
-The console starts with `=== EditForthPWA 1.1.1 === Nov 2, 2026 5:06 PM ===`. `CLS` clears back to that line and the prompt. The Forth command line is the tail of the console text, on the line under the last output. The prompt is `ok(n)> `, with a trailing space. `n` is how many values are on the data stack. Return runs that tail. The output follows, and a new prompt is drawn in the same text. Up and Down recall earlier lines into that tail. An unknown name prints `undefined: NAME`, then `file:line`, then `throw -13`, in red, and the editor selects that line.
+The console starts with `=== EditForthPWA 1.1.2 === Nov 2, 2026 11:01 PM ===`. `CLS` clears back to that line and the prompt. The Forth command line is the tail of the console text, on the line under the last output. The prompt is `ok(n)> `, with a trailing space. `n` is how many values are on the data stack. Return runs that tail. The output follows, and a new prompt is drawn in the same text. Up and Down recall earlier lines into that tail. An unknown name prints `undefined: NAME`, then `file:line`, then `throw -13`, in red, and the editor selects that line.
 
 `KEY` and `EKEY` wait for the next key typed in the console. `KEY` returns the low 8 bits. `EKEY` returns the whole cell, so F6, F7, and F8 keep their tags. `KEY?` returns true when a key is waiting in the page buffer. It does not consume that key. Every 10th call also paints the pending console output and waits one millisecond, so a key typed during that wait is included. Keys typed while a program is running stay in that buffer, up to 64, until `KEY` or `EKEY` reads them. `PAUSE` does the same paint and wait without checking the keyboard. A `CR` at the end of that output opens the next line. A graphics sample opens a canvas over the editor. Pointer, wheel, and keys go to that window. Esc or Q closes it and returns to the console.
 
